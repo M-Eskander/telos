@@ -1,0 +1,72 @@
+PROJECT FIXES REPORT
+===================
+
+Date: May 2, 2026
+Project: Telos Backend (Node.js/Express with Knex, Passport, Redis)
+
+SUMMARY OF CHANGES MADE:
+========================
+
+1. **Fixed Authentication Middleware (src/middleware/auth.middleware.js)**
+   - Replaced incorrect checkPerm export with proper Passport.js configuration
+   - Added LocalStrategy for email/password authentication
+   - Implemented passport.serializeUser and passport.deserializeUser
+   - Now exports passport instance instead of middleware function
+
+2. **Enhanced Auth Service (src/services/auth.service.js)**
+   - Added findUserById function for Passport deserialization
+   - Function supports transaction parameter for database operations
+
+3. **Fixed Server Startup (src/utils/startServer.js)**
+   - Converted from ES6 export to CommonJS module.exports
+   - Modified to accept app parameter for proper Express app initialization
+   - Redis connection is required (server fails if Redis unavailable)
+
+4. **Updated App Entry Point (src/app.js)**
+   - Modified startServer() call to pass the app instance: startServer(app)
+
+5. **Fixed PDP Service (src/services/pdp.service.js)**
+   - Removed circular dependency (self-requiring getEffectivePermissions)
+   - Added placeholder implementation for getEffectivePermissions function
+   - Properly exported both checkPerm and getEffectivePermissions
+
+6. **Corrected Repository Knex Imports**
+   - Fixed all repository files to import from '../config/knex' instead of '../db/knex'
+   - Affected files:
+     * src/repositories/attributeRepo.js
+     * src/repositories/permissionAttributesRepo.js
+     * src/repositories/permissionRepo.js
+     * src/repositories/roleAttributesRepos.js
+     * src/repositories/userAttributesRepo.js
+
+7. **Fixed Repository Logic Bugs**
+   - src/repositories/roleAttributesRepos.js: Changed 'if (existing > 0)' to 'if (existing.length > 0)'
+   - src/repositories/userAttributesRepo.js: Changed 'if (existing > 0)' to 'if (existing.length > 0)'
+
+8. **Redis Configuration**
+   - Initially made Redis optional for local development
+   - Reverted to essential requirement per user request
+   - Server will exit with code 1 if Redis connection fails
+
+ROOT CAUSES ADDRESSED:
+=====================
+- TypeError: passport.initialize is not a function (fixed auth middleware)
+- Module loading issues with ES6/CommonJS mismatch
+- Incorrect database connection paths
+- Logic errors in attribute repository functions
+- Circular dependencies in PDP service
+
+CURRENT STATUS:
+==============
+- Server startup errors resolved
+- Authentication system properly configured with Passport.js
+- Database connections corrected
+- Redis dependency enforced
+- All repository functions should work correctly
+
+NEXT STEPS:
+==========
+- Start Redis server locally or configure REDIS_URL environment variable
+- Run database migrations if needed: npm run knex migrate:latest
+- Test authentication endpoints (/api/auth/login, /api/auth/register)
+- Test project CRUD operations (/api/projects/*)

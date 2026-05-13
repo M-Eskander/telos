@@ -1,0 +1,103 @@
+Table games {
+  id int [pk]
+  title varchar
+  cover_image varchar
+  price decimal
+  created_at timestamp
+}
+
+Table teams {
+  id int [pk]
+  name varchar
+}
+
+Table game_teams {
+  game_id int [ref: > games.id] 
+  team_id int [ref: > teams.id]
+  
+  indexes {
+    (game_id, team_id) [pk]
+  }
+}
+
+Table roles {
+  id int [pk]
+  name varchar
+}
+
+Table users {
+  id int [pk]
+  name varchar [not null]
+  phone_number varchar [not null]
+  email varchar [unique] 
+  password varchar
+  creaed_at timestamp
+}
+
+Table user_roles {
+  user_id int [ref: > users.id]
+  role_id int [ref: > roles.id]
+  
+  indexes {
+    (role_id, user_id) [pk]
+  }
+}
+
+Table permissions {
+  id int [pk]
+  name varchar [not null]
+}
+
+Table role_permissions {
+  role_id int [ref: > roles.id]
+  permission_id int [ref: > permissions.id]
+
+  indexes {
+    (permission_id, role_id) [pk]
+  }
+}
+
+Table projects {
+  id int [pk]
+  name varchar [not null]
+  description text
+  created_by int [ref: > users.id]
+  created_at timestamp
+}
+
+Table tasks {
+  id int [pk]
+  title varchar [not null]
+  description text
+  status int [ref: > status.id]
+  priority varchar
+  project_id int [ref: > projects.id]
+  created_by int [ref: > users.id]
+  created_at timestamp
+}
+
+Table task_assignment {
+  task_id int [ref: > tasks.id]
+  user_id int [ref: > users.id]
+  created_at timestamp
+  indexes {
+    (task_id, user_id) [pk]
+  }
+}
+
+Table task_attachments {
+  id int [pk]
+  task_id int [ref: > tasks.id]
+  file_url varchar [not null]
+  created_by int [ref: > users.id]
+}
+
+Table status {
+  id int [pk]
+  name varchar [not null]
+}
+
+Table task_dependencies {
+  task_id int [ref: > tasks.id]
+  depends_on_id int [ref: > tasks.id]
+}
