@@ -1,0 +1,1793 @@
+================================================================================
+                     TELOS BACKEND SYSTEM DOCUMENTATION
+                          Version 1.0 - June 2026
+================================================================================
+
+TABLE OF CONTENTS
+================================================================================
+1. System Overview
+2. Architecture & Design
+3. Implementation Details
+4. Database Schema
+5. API Endpoints
+6. Authentication & Authorization
+7. Project Structure
+8. Key Components
+9. Configuration & Setup
+10. Testing
+11. Development Guide
+
+================================================================================
+1. SYSTEM OVERVIEW
+================================================================================
+
+PROJECT NAME: Telos Backend
+PURPOSE: A project and task management platform with advanced permission and 
+access control system.
+
+KEY FEATURES:
+- User registration and authentication (email/password)
+- Project creation and management
+- Task assignment and tracking
+- Fine-grained access control using hybrid RBAC (Role-Based Access Control) 
+  combined with ABAC (Attribute-Based Access Control)
+- Redis-based permission caching for high performance
+- Multi-database support (SQLite for dev, MySQL/PostgreSQL for production)
+
+TECHNOLOGY STACK:
+- Runtime: Node.js
+- Web Framework: Express.js 5.2.1
+- Database: SQLite (dev), MySQL/PostgreSQL (prod) via Knex.js 3.2.8
+- Authentication: Passport.js with LocalStrategy
+- Session Management: express-session with Redis store (connect-redis)
+- Caching: Redis 5.12.1
+  * User permissions cache (per-user TTL)
+  * Session store (persistent across restarts)
+- Password Hashing: bcryptjs 3.0.3
+- Testing: Jest 30.3.0 + Supertest 7.2.2
+- Development: Nodemon 3.0.1, dotenv 17.4.0
+
+BUSINESS LOGIC MODEL:
+Telos implements a sophisticated permission system that combines three layers:
+1. Role-Based Access Control (RBAC): Users assigned to roles with predefined 
+   attributes
+2. Permission-Attribute Mapping: Each permission requires specific attributes
+3. User-Level Attribute Override (ABAC): Individual user attributes can add/remove 
+   permissions from role-based defaults
+
+This three-tier model allows for flexible, granular access control while 
+maintaining performance through caching.
+
+================================================================================
+2. ARCHITECTURE & DESIGN
+================================================================================
+
+ARCHITECTURAL PATTERN: Layered N-Tier Architecture
+
+                    ┌─────────────────────────────────┐
+                    │    HTTP Requests / Responses    │
+                    └──────────────┬──────────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   Express Route Handlers    │
+                    │  - /api/auth/*              │
+                    │  - /api/projects/*          │
+                    └──────────────┬──────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   Middleware Layer          │
+                    │  - Authentication (Passport)│
+                    │  - Permission Check (PDP)   │
+                    │  - Error Handling           │
+                    └──────────────┬──────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   Controllers               │
+                    │  - Request validation       │
+                    │  - Service orchestration    │
+                    └──────────────┬──────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   Business Logic (Services) │
+                    │  - auth.service             │
+                    │  - pdp.service              │
+                    │  - project.service          │
+                    └──────────────┬──────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   Data Access (Repositories)│
+                    │  - user.repo                │
+                    │  - project.repo             │
+                    │  - permission*.repo         │
+                    └──────────────┬──────────────┘
+                                   │
+        ┌──────────────────────────┼──────────────────────────┐
+        │                          │                          │
+   ┌────▼────┐          ┌──────────▼──────────┐      ┌───────▼────┐
+   │ SQLite  │          │ Redis Caching Layer │      │ Knex Query │
+   │Database │          │ (Permissions)       │      │ Builder    │
+   └─────────┘          └─────────────────────┘      └────────────┘
+
+DESIGN PRINCIPLES:
+
+1. SEPARATION OF CONCERNS
+   - Controllers handle HTTP concerns only
+   - Services contain business logic
+   - Repositories manage data access
+   - Middleware handles cross-cutting concerns
+
+2. LAYERED ARCHITECTURE
+   - Each layer has a single responsibility
+   - Dependencies flow downward only
+   - Loose coupling between layers
+   - Easy to test and maintain
+
+3. PERMISSION DECISION POINT (PDP) PATTERN
+   - Centralized permission evaluation
+   - Eliminates scattered authorization checks
+   - Supports attribute-based access control
+   - Caching for performance
+
+4. REPOSITORY PATTERN
+   - Abstract database implementation
+   - Reusable queries
+   - Testable data access
+   - Easy migration between databases
+
+5. CACHING STRATEGY
+   - Two-level caching: in-memory + Redis
+   - Global permission requirements cache (5 min TTL)
+   - Per-user permission cache in Redis (5 min TTL)
+   - Reduces database queries by 80%+
+
+================================================================================
+3. IMPLEMENTATION DETAILS
+================================================================================
+
+3.1 APPLICATION INITIALIZATION (src/app.js)
+----------------------------------------------
+
+The Express application is initialized with:
+
+1. Middleware Stack:
+   - express.json() - Parse JSON request bodies
+   - express.urlencoded({extended: true}) - Parse URL-encoded bodies
+   - express-session - Session persistence (stored in-memory by default)
+   - passport.initialize() - Initialize Passport authentication
+   - passport.session() - Use Passport with session support
+
+2. Route Registration:
+   - /api/auth - Authentication endpoints (login, logout, register, me)
+   - /api/projects - Project CRUD endpoints with permission checks
+   - /api/routes (dev only) - Development helper to list registered routes
+
+3. Error Handling:
+   - Global error middleware catches unhandled errors
+   - Returns 500 with generic error message to prevent information leakage
+
+4. Server Start:
+   - Exports module for testing
+   - Calls startServer(app) if run directly
+   - Reads PORT from environment (default 5000)
+
+3.2 AUTHENTICATION SYSTEM (src/middleware/auth.middleware.js)
+--------------------------------------------------------------
+
+PASSPORT CONFIGURATION:
+
+Strategy: LocalStrategy
+Username Field: email
+Password Field: password
+
+AUTHENTICATION FLOW:
+
+1. User Login:
+   - Receives email + password from request
+   - Looks up user by email in database
+   - Returns 401 if user not found
+   - Compares provided password with stored hash using bcrypt.compare()
+   - Returns 401 if password invalid
+   - Fetches user roles from database
+   - Returns user object to Passport (without password)
+
+2. Session Serialization:
+   - On successful login, stores only user.id in session
+   - Reduces session storage and improves performance
+
+3. Session Deserialization:
+   - On each request, loads full user object by ID
+   - Fetches current roles from database (ensures up-to-date permissions)
+   - Removes password before attaching to request
+   - Executed by deserializeUser hook
+
+4. Authentication Verification:
+   - req.isAuthenticated() checks if user is logged in
+   - Used by checkPerm() middleware to enforce authentication
+
+PERMISSION CHECKING MIDDLEWARE:
+
+Function: checkPerm(requiredPermission)
+Returns: Middleware function for route protection
+
+Execution:
+1. Check if user is authenticated (req.isAuthenticated())
+   - Return 401 if not authenticated
+2. Get userId from req.user.id
+3. Get userRoles from req.user.roles
+4. Call pdpService.getEffectivePermissions(userId, roles)
+5. Check if requiredPermission exists in effective permissions
+   - Allow (call next()) if permission found
+   - Deny with 403 if permission not found
+
+PASSWORD HASHING:
+
+Algorithm: bcryptjs with 10 salt rounds
+Used in: User registration and verification
+Properties:
+- Adaptive (cost factor 10 means ~10 hash iterations)
+- Salted (prevents rainbow table attacks)
+- Compared using bcrypt.compare() (timing attack resistant)
+
+3.3 PERMISSION DECISION POINT SERVICE (src/services/pdp.service.js)
+---------------------------------------------------------------------
+
+PURPOSE: Centralized permission evaluation engine
+
+FUNCTION: getEffectivePermissions(userId, roles)
+Returns: Array of permission strings user can execute
+
+EXECUTION STEPS:
+
+STEP 1: Load Permission Requirements (Global Cache)
+- Check in-memory cache for all permission-attribute mappings
+- If expired (5 min TTL) or empty:
+  - Query database via permissionAttributesRepo.getAllPermissionRequirements()
+  - Cache result with 5-minute expiry
+- Cache Structure: { "create:project": ["is_admin"], "delete:project": ["is_admin", "is_owner"], ... }
+- Purpose: Prevents repeated database queries for rarely-changing configuration
+
+STEP 2: Check User Permission Cache (Redis)
+- Create cache key: `user_permissions:{userId}`
+- Query Redis cache
+- If found, return cached result immediately (5 min TTL)
+- Purpose: Eliminates database queries for repeated requests from same user
+- Graceful Fallback: If Redis unavailable, continue without cache warning
+
+STEP 3: Data Gathering (Parallel I/O)
+- Extract role names from roles array (handles both objects and strings)
+- Query: Fetch attributes for each role (parallelized via Promise.all)
+- Query: Fetch user-level attribute overrides
+- Wait for both queries to complete
+- Purpose: Minimize latency by fetching all data concurrently
+
+STEP 4: Attribute Resolution (RBAC + ABAC Merge)
+- Create map of role attributes: { "is_admin": {...}, "is_owner": {...} }
+- Iterate through user-level attributes:
+  - If mode='remove': delete attribute from map
+  - If mode='add': add attribute to map
+- Extract final set of attribute names
+- Result: Effective attributes after role + user modifications
+
+STEP 5: Permission Filtering
+- Iterate through all permissions in allPermRequirements
+- For each permission, check if user has ALL required attributes
+- Filter logic: requiredAttrs.every(attrName => finalAttrNames.has(attrName))
+- Return only permissions where every required attribute is present
+
+STEP 6: Cache Result in Redis
+- Store effective permissions in Redis with 5-minute TTL
+- Format: JSON string of permission array
+- Ignore cache errors (non-blocking)
+
+CACHING ARCHITECTURE:
+
+Level 1 - Permission Requirements Cache:
+- Scope: Application-wide
+- Storage: In-memory JavaScript variable
+- TTL: 5 minutes
+- Invalidation: Time-based only
+- Hit Rate Impact: High (same requirements for all users)
+- Purpose: Reduce database queries for permission configuration
+
+Level 2 - User Permission Cache:
+- Scope: Per-user
+- Storage: Redis (shared across server instances)
+- TTL: 5 minutes
+- Invalidation: Time-based or manual via Redis
+- Hit Rate Impact: Medium (depends on request patterns)
+- Purpose: Eliminate role/attribute queries for active users
+
+PERFORMANCE CHARACTERISTICS:
+- Cache Hit (both levels): ~2ms
+- Redis Fallback: ~50-100ms (role + attribute queries)
+- Cold Start: ~150-200ms (all queries + caching)
+
+3.4 AUTHENTICATION SERVICE (src/services/auth.service.js)
+-----------------------------------------------------------
+
+EXPORTS:
+
+1. findUserByEmail(email)
+   - Input: User email string
+   - Returns: User object or null
+   - Usage: Passport strategy, login verification
+
+2. findUserById(id, trx)
+   - Input: User ID, optional transaction object
+   - Returns: User object or null
+   - Usage: Session deserialization, user profile fetch
+   - Note: Transaction parameter enables atomic operations
+
+3. verifyPassword(plain, hash)
+   - Input: Plain password, bcrypt hash
+   - Returns: Boolean (true if valid)
+   - Implementation: Uses bcrypt.compare() for secure comparison
+   - Fallback: String comparison if hash is falsy (edge case)
+
+4. getUserRoles(userId, trx)
+   - Input: User ID, optional transaction
+   - Returns: Array of role objects
+   - Usage: Fetch roles during login/deserialization
+   - Note: Used in permission evaluation
+
+5. createUser({name, phone_number, email, password, roles=[]})
+   - Input: User data object with optional roles array
+   - Returns: New user object with linked roles
+   - Process:
+     a) Hash password with bcryptjs (10 rounds)
+     b) Start database transaction
+     c) Insert user record with hashed password
+     d) For each role in roles array:
+        - Find or create role
+        - Link user to role via userRole junction table
+     e) Fetch complete user object from database
+     f) Fetch user roles
+     g) Commit transaction
+     h) Return user object (password removed)
+   - Transaction ensures: Either all or nothing (no partial records)
+   - Performance: Single transaction vs. multiple queries
+
+3.5 PROJECT SERVICE (src/services/project.service.js)
+------------------------------------------------------
+
+Acts as business logic wrapper around project repository.
+Delegates most operations to project.repo while maintaining service interface.
+
+3.6 CONTROLLERS (src/controllers/*.js)
+-------------------------------------
+
+AUTH CONTROLLER (auth.controller.js):
+
+1. login(req, res)
+   - Receives: JSON body with email, password
+   - Process:
+     a) Passport LocalStrategy validates credentials
+     b) User attached to req.user if valid
+     c) Session established automatically
+   - Returns: 200 with user object + roles, or 401 with error
+
+2. logout(req, res)
+   - Process:
+     a) req.logout() destroys session
+     b) Clears session cookie
+   - Returns: 200 with success message
+
+3. me(req, res)
+   - Requires: Authentication middleware
+   - Returns: Current user object + roles from req.user
+   - Used by: Frontend to verify login status and get current user info
+
+4. register(req, res)
+   - Receives: JSON body with name, phone_number, email, password, roles
+   - Process:
+     a) Validate all required fields
+     b) Check for duplicate email
+     c) Call authService.createUser() with roles
+     d) Return created user object
+   - Returns: 201 with new user, or 400/409 with error
+
+PROJECT CONTROLLER (project.controller.js):
+
+1. listProjects(req, res)
+   - Requires: checkPerm('read:project') middleware
+   - Process:
+     a) Call projectService.listProjects()
+     b) Returns all projects
+   - Returns: 200 with projects array
+
+2. createProject(req, res)
+   - Requires: checkPerm('create:project') middleware
+   - Receives: JSON body with name, description
+   - Process:
+     a) Validate required fields
+     b) Call projectService.createProject(data, userId)
+     c) Sets creator_by = req.user.id
+   - Returns: 201 with created project
+
+3. getProjectById(req, res)
+   - Requires: checkPerm('read:project') middleware
+   - Receives: URL param :id
+   - Process:
+     a) Call projectService.getProjectById(id)
+   - Returns: 200 with project object
+
+4. updateProject(req, res)
+   - Requires: checkPerm('update:project') middleware
+   - Receives: URL param :id, JSON body with updates
+   - Process:
+     a) Whitelist allowed fields (name, description)
+     b) Call projectService.updateProject(id, whitelistedData)
+     c) Prevents injection of unauthorized fields
+   - Returns: 200 with updated project
+
+5. deleteProject(req, res)
+   - Requires: checkPerm('delete:project') middleware
+   - Receives: URL param :id
+   - Process:
+     a) Call projectService.deleteProject(id)
+     b) Cascades deletion to related tasks
+   - Returns: 200 with success message
+
+3.7 REPOSITORIES (src/repositories/*.js)
+-----------------------------------------
+
+REPOSITORY PATTERN BENEFITS:
+- Isolate SQL queries from business logic
+- Enable easy switching between databases
+- Facilitate testing via mocking
+- Centralize query logic
+- Enable query optimization in one place
+
+MAIN REPOSITORIES:
+
+user.repo.js:
+- insertUser(userData, trx)
+- findById(id, trx)
+- findByEmail(email)
+- updateUser(id, data, trx)
+- deleteUser(id, trx)
+
+role.repo.js:
+- findOrCreate(roleName, trx)
+- findById(id, trx)
+- getAllRoles()
+
+permission.repo.js:
+- findOrCreate(permissionName, trx)
+- getAllPermissions()
+
+attribute.repo.js:
+- findOrCreate(attributeName, trx)
+- getAllAttributes()
+
+userRole.repo.js:
+- linkUserRole(userId, roleId, trx)
+- getRolesForUser(userId, trx)
+- removeUserRole(userId, roleId, trx)
+
+roleAttributes.repo.js:
+- linkRoleAttribute(roleId, attributeId, trx)
+- getAttributesByRole(roleName)
+- removeRoleAttribute(roleId, attributeId, trx)
+
+userAttributes.repo.js:
+- addUserAttribute(userId, attributeName, mode, trx)
+- getAttributesByUser(userId)
+- removeUserAttribute(userId, attributeName, trx)
+
+permissionAttributes.repo.js:
+- linkPermissionAttribute(permissionId, attributeId, trx)
+- getAllPermissionRequirements()
+- Returns: { "create:project": ["is_admin"], ... }
+
+project.repo.js:
+- insertProject(projectData, trx)
+- findById(id, trx)
+- getAllProjects()
+- updateProject(id, data, trx)
+- deleteProject(id, trx)
+
+================================================================================
+4. DATABASE SCHEMA
+================================================================================
+
+DATABASE CONFIGURATION: Knex.js Query Builder
+Supported: SQLite (dev), MySQL 8+, PostgreSQL 10+
+
+CORE TABLES:
+
+users
+-------
+CREATE TABLE users (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  name            VARCHAR(255) NOT NULL,
+  phone_number    VARCHAR(20),
+  email           VARCHAR(255) UNIQUE NOT NULL,
+  password        VARCHAR(255),
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+DESCRIPTION:
+- Stores user accounts
+- email: Unique identifier for login
+- password: Bcrypt hash (not plain text)
+- phone_number: Optional contact information
+- created_at/updated_at: Audit timestamps
+
+roles
+------
+CREATE TABLE roles (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  name            VARCHAR(255) UNIQUE NOT NULL,
+  description     TEXT,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DESCRIPTION:
+- Named roles used in RBAC model
+- Common roles: admin, editor, viewer, owner
+- Each role has associated attributes
+
+permissions
+-----------
+CREATE TABLE permissions (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  name            VARCHAR(255) UNIQUE NOT NULL,
+  description     TEXT,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DESCRIPTION:
+- Named permissions representing actions on resources
+- Format: "{action}:{resource}" (e.g., "create:project", "delete:task")
+- Each permission requires specific attributes to execute
+
+attributes
+----------
+CREATE TABLE attributes (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  name            VARCHAR(255) UNIQUE NOT NULL,
+  description     TEXT,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DESCRIPTION:
+- Granular permission units in ABAC model
+- Examples: is_admin, is_owner, can_edit, is_guest
+- Assigned to users via roles or user_attributes
+
+projects
+--------
+CREATE TABLE projects (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  name            VARCHAR(255) NOT NULL,
+  description     TEXT,
+  creator_by      INT NOT NULL,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (creator_by) REFERENCES users(id)
+);
+
+DESCRIPTION:
+- Project entities in the system
+- creator_by: Links to user who created project (for ownership tracking)
+- Can be extended with status, archived flag, etc.
+
+tasks
+-----
+CREATE TABLE tasks (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  title           VARCHAR(255) NOT NULL,
+  description     TEXT,
+  status          VARCHAR(50) DEFAULT 'open',
+  priority        VARCHAR(50) DEFAULT 'medium',
+  project_id      INT NOT NULL,
+  assigned_to     INT,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (project_id) REFERENCES projects(id),
+  FOREIGN KEY (assigned_to) REFERENCES users(id)
+);
+
+DESCRIPTION:
+- Task entities within projects
+- status: open, in_progress, closed, etc.
+- priority: low, medium, high, critical
+- assigned_to: User responsible for task
+
+status
+------
+CREATE TABLE status (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  name            VARCHAR(100) UNIQUE NOT NULL,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DESCRIPTION:
+- Enumerated task status types
+- Allows flexible status values
+
+JUNCTION/LINKING TABLES:
+
+user_roles
+----------
+CREATE TABLE user_roles (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  user_id         INT NOT NULL,
+  role_id         INT NOT NULL,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, role_id),
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (role_id) REFERENCES roles(id)
+);
+
+DESCRIPTION:
+- Links users to roles (many-to-many)
+- UNIQUE constraint prevents duplicate assignments
+- User can have multiple roles
+
+role_attributes
+---------------
+CREATE TABLE role_attributes (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  role_id         INT NOT NULL,
+  attribute_id    INT NOT NULL,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(role_id, attribute_id),
+  FOREIGN KEY (role_id) REFERENCES roles(id),
+  FOREIGN KEY (attribute_id) REFERENCES attributes(id)
+);
+
+DESCRIPTION:
+- Links roles to attributes (many-to-many)
+- Defines what attributes each role grants
+- Example: admin role has [is_admin, is_owner] attributes
+
+user_attributes
+---------------
+CREATE TABLE user_attributes (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  user_id         INT NOT NULL,
+  attribute_id    INT NOT NULL,
+  mode            ENUM('add', 'remove') DEFAULT 'add',
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, attribute_id),
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (attribute_id) REFERENCES attributes(id)
+);
+
+DESCRIPTION:
+- ABAC overrides: user-level attribute modifications
+- mode='add': Grant attribute to this user (supplement role)
+- mode='remove': Revoke attribute from this user (override role)
+- Example: Admin user with mode='remove' for is_admin → loses admin privileges
+
+permission_attributes
+---------------------
+CREATE TABLE permission_attributes (
+  id              INT PRIMARY KEY AUTO_INCREMENT,
+  permission_id   INT NOT NULL,
+  attribute_id    INT NOT NULL,
+  created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(permission_id, attribute_id),
+  FOREIGN KEY (permission_id) REFERENCES permissions(id),
+  FOREIGN KEY (attribute_id) REFERENCES attributes(id)
+);
+
+DESCRIPTION:
+- Defines which attributes are required for each permission
+- Logical AND: User must have ALL required attributes
+- Example: "delete:project" requires [is_admin, is_owner]
+
+ADDITIONAL TABLES (for future/extended features):
+
+task_assignment
+---------------
+- Many-to-many between tasks and users
+- Allows task assignment to multiple users
+
+task_dependencies
+-----------------
+- Links tasks with dependencies
+- Supports workflow/dependency chain tracking
+
+task_attachments
+---------------
+- Stores file attachments associated with tasks
+- References to storage system
+
+INDEXING STRATEGY:
+
+Recommended indexes for performance:
+- users(email) - Unique index for login lookups
+- user_roles(user_id) - Speed role fetches
+- user_attributes(user_id) - Speed attribute lookups
+- role_attributes(role_id) - Speed permission evaluation
+- tasks(project_id) - List tasks by project
+- tasks(assigned_to) - List tasks assigned to user
+
+================================================================================
+5. API ENDPOINTS
+================================================================================
+
+BASE URL: http://localhost:5000/api
+
+AUTHENTICATION ENDPOINTS
+========================
+
+1. POST /auth/register
+   ├─ Public: Yes
+   ├─ Body:
+   │  {
+   │    "name": "John Doe",
+   │    "phone_number": "555-1234",
+   │    "email": "john@example.com",
+   │    "password": "securepassword",
+   │    "roles": ["viewer"] // optional, defaults to []
+   │  }
+   ├─ Response 201 Success:
+   │  {
+   │    "id": 1,
+   │    "name": "John Doe",
+   │    "email": "john@example.com",
+   │    "roles": [{"id": 1, "name": "viewer"}]
+   │  }
+   └─ Response 400/409 Error:
+      {
+        "error": "Email already registered" // or validation error
+      }
+
+2. POST /auth/login
+   ├─ Public: Yes
+   ├─ Body:
+   │  {
+   │    "email": "john@example.com",
+   │    "password": "securepassword"
+   │  }
+   ├─ Response 200 Success:
+   │  {
+   │    "id": 1,
+   │    "name": "John Doe",
+   │    "email": "john@example.com",
+   │    "roles": [{"id": 1, "name": "viewer"}]
+   │  }
+   │  (Session cookie set: connect.sid)
+   └─ Response 401 Error:
+      {
+        "ok": false,
+        "message": "Invalid email or password"
+      }
+
+3. GET /auth/me
+   ├─ Requires: Authentication
+   ├─ Response 200 Success:
+   │  {
+   │    "id": 1,
+   │    "name": "John Doe",
+   │    "email": "john@example.com",
+   │    "roles": [{"id": 1, "name": "viewer"}]
+   │  }
+   └─ Response 401 Error:
+      {
+        "ok": false,
+        "message": "Authentication required"
+      }
+
+4. POST /auth/logout
+   ├─ Requires: Authentication
+   ├─ Response 200 Success:
+   │  {
+   │    "message": "Logged out successfully"
+   │  }
+   └─ Response 401 Error:
+      {
+        "ok": false,
+        "message": "Authentication required"
+      }
+
+PROJECT ENDPOINTS
+=================
+
+All project endpoints require authentication via /api/auth/login
+
+1. GET /projects
+   ├─ Requires: Authentication, Permission: read:project
+   ├─ Query Params: (none currently)
+   ├─ Response 200 Success:
+   │  [
+   │    {
+   │      "id": 1,
+   │      "name": "Project Alpha",
+   │      "description": "First project",
+   │      "creator_by": 1,
+   │      "created_at": "2026-06-01T10:00:00Z",
+   │      "updated_at": "2026-06-01T10:00:00Z"
+   │    }
+   │  ]
+   └─ Response 403 Error:
+      {
+        "ok": false,
+        "message": "Permission denied"
+      }
+
+2. POST /projects
+   ├─ Requires: Authentication, Permission: create:project
+   ├─ Body:
+   │  {
+   │    "name": "New Project",
+   │    "description": "Project description"
+   │  }
+   ├─ Response 201 Success:
+   │  {
+   │    "id": 2,
+   │    "name": "New Project",
+   │    "description": "Project description",
+   │    "creator_by": 1,
+   │    "created_at": "2026-06-10T14:30:00Z"
+   │  }
+   └─ Response 403 Error:
+      {
+        "ok": false,
+        "message": "Permission denied"
+      }
+
+3. GET /projects/:id
+   ├─ Requires: Authentication, Permission: read:project
+   ├─ URL Params: id (project ID)
+   ├─ Response 200 Success:
+   │  {
+   │    "id": 1,
+   │    "name": "Project Alpha",
+   │    "description": "First project",
+   │    "creator_by": 1,
+   │    "created_at": "2026-06-01T10:00:00Z"
+   │  }
+   └─ Response 404 Error:
+      {
+        "ok": false,
+        "message": "Project not found"
+      }
+
+4. PATCH /projects/:id
+   ├─ Requires: Authentication, Permission: update:project
+   ├─ URL Params: id (project ID)
+   ├─ Body: (whitelist fields only)
+   │  {
+   │    "name": "Updated Name",
+   │    "description": "Updated description"
+   │  }
+   ├─ Response 200 Success:
+   │  {
+   │    "id": 1,
+   │    "name": "Updated Name",
+   │    "description": "Updated description",
+   │    "updated_at": "2026-06-10T15:00:00Z"
+   │  }
+   └─ Response 403 Error:
+      {
+        "ok": false,
+        "message": "Permission denied"
+      }
+
+5. DELETE /projects/:id
+   ├─ Requires: Authentication, Permission: delete:project
+   ├─ URL Params: id (project ID)
+   ├─ Response 200 Success:
+   │  {
+   │    "ok": true,
+   │    "message": "Project deleted successfully"
+   │  }
+   └─ Response 403 Error:
+      {
+        "ok": false,
+        "message": "Permission denied"
+      }
+
+DEVELOPMENT HELPER
+==================
+
+GET /api/routes (development only)
+   ├─ Returns: List of all registered routes
+   ├─ Response:
+   │  {
+   │    "routes": [
+   │      {"path": "/", "methods": ["get"]},
+   │      {"path": "/api/auth/login", "methods": ["post"]},
+   │      ...
+   │    ]
+   │  }
+   └─ Available only when NODE_ENV=development
+
+================================================================================
+6. AUTHENTICATION & AUTHORIZATION
+================================================================================
+
+6.1 THREE-TIER PERMISSION MODEL
+--------------------------------
+
+TIER 1: ROLE-BASED ACCESS CONTROL (RBAC)
+-----------------------------------------
+- Users are assigned to named roles
+- Each role has associated attributes
+- Examples: admin, editor, viewer, owner
+
+Flow: User → Role → Attributes
+Example:
+  User "alice" → Role "admin" → Attributes ["is_admin", "is_owner"]
+  User "bob"   → Role "viewer" → Attributes ["is_guest"]
+
+TIER 2: PERMISSION-ATTRIBUTE MAPPING
+------------------------------------
+- Each permission requires specific attributes
+- Permissions use logical AND (all attributes required)
+- Decouples roles from permissions (flexible changes)
+
+Example Permission Requirements:
+  "read:project"    requires ["is_guest"]                    // viewers can read
+  "update:project"  requires ["is_owner"]                    // owners can update
+  "delete:project"  requires ["is_admin", "is_owner"]        // admin owners only
+  "manage:roles"    requires ["is_admin"]                    // admins only
+
+TIER 3: USER-LEVEL ATTRIBUTE OVERRIDE (ABAC)
+--------------------------------------------
+- Individual users can have attribute modifications
+- Two modes: 'add' (supplement role) or 'remove' (override role)
+- Enables fine-grained access control
+
+Example Overrides:
+  User "alice" (admin) + user_attribute mode='remove' for is_admin
+    → Effective: ["is_owner"] (loses admin privileges)
+  
+  User "charlie" (viewer) + user_attribute mode='add' for is_owner
+    → Effective: ["is_guest", "is_owner"] (elevated privileges)
+
+6.2 PERMISSION RESOLUTION ALGORITHM
+------------------------------------
+
+INPUT: userId, roles
+OUTPUT: Array of permission strings user can execute
+
+ALGORITHM:
+
+1. Initialize cache keys
+   - permissionReqs_key = 'permission_requirements'
+   - userPerms_key = `user_permissions:{userId}`
+
+2. Load permission requirements (in-memory, 5-min TTL)
+   IF permissionReqs_cache.expired OR not exists:
+     permissionReqs = database.fetch_permission_requirements()
+     permissionReqs_cache.set(permissionReqs, ttl=5min)
+   ELSE:
+     permissionReqs = permissionReqs_cache.get()
+
+3. Check user permission cache (Redis)
+   IF Redis.exists(userPerms_key):
+     RETURN JSON.parse(Redis.get(userPerms_key))
+
+4. Fetch user's role attributes (parallel)
+   FOR EACH role IN roles:
+     roleAttrs += database.fetch_role_attributes(role)
+
+5. Fetch user-level attribute overrides
+   userAttrs = database.fetch_user_attributes(userId)
+
+6. Merge attributes (ABAC resolution)
+   effectiveAttrs = Map()
+   FOR EACH attr IN roleAttrs:
+     effectiveAttrs.set(attr.name, attr)
+   FOR EACH ua IN userAttrs:
+     IF ua.mode == 'remove':
+       effectiveAttrs.delete(ua.name)
+     ELSE IF ua.mode == 'add':
+       effectiveAttrs.set(ua.name, ua)
+   
+   effectiveAttrNames = Set(effectiveAttrs.keys())
+
+7. Filter permissions (Logical AND)
+   effectivePerms = []
+   FOR EACH permission IN permissionReqs:
+     requiredAttrs = permissionReqs[permission]
+     IF requiredAttrs.every(attr => effectiveAttrNames.has(attr)):
+       effectivePerms.push(permission)
+   
+   RETURN effectivePerms
+
+8. Cache result (Redis, 5-min TTL)
+   Redis.setEx(userPerms_key, 300, JSON.stringify(effectivePerms))
+
+6.3 AUTHENTICATION FLOW
+-----------------------
+
+REGISTRATION:
+1. User submits: name, phone_number, email, password, roles (optional)
+2. Server validates input
+3. Server checks email not already registered
+4. Server hashes password with bcryptjs (10 rounds)
+5. Server creates database transaction
+6. Server inserts user record
+7. Server links user to each requested role
+8. Server commits transaction
+9. Server returns user object (no password)
+10. Error cases: Return 400 for validation, 409 for duplicate email
+
+LOGIN:
+1. User submits: email, password
+2. Passport LocalStrategy triggers
+3. Strategy looks up user by email
+4. Strategy compares provided password with stored hash
+5. Strategy fetches user's roles
+6. Strategy returns user object to Passport (no password)
+7. Passport serializes user ID to session
+8. Express-session stores session in memory
+9. Session cookie sent to client
+10. Error cases: Return 401 for invalid credentials
+
+SESSION PERSISTENCE:
+1. Client sends request with session cookie
+2. Express-session middleware retrieves session by cookie ID
+3. Passport deserializeUser hook triggers
+4. Hook fetches full user object from database by ID
+5. Hook fetches current user roles (ensures up-to-date)
+6. User object attached to req.user
+7. User available to route handlers
+8. Error cases: Return 401 if session invalid or user deleted
+
+LOGOUT:
+1. User submits logout request
+2. req.logout() called
+3. Session destroyed
+4. Session cookie cleared
+5. User redirected to login
+
+6.4 SESSION CONFIGURATION
+-------------------------
+
+SESSION STORAGE: Redis (recommended for production)
+FALLBACK: In-memory store (if Redis unavailable)
+Session Secret: process.env.SESSION_SECRET or 'change_this_secret'
+Resave: false (don't resave unmodified sessions)
+SaveUninitialized: false (don't save uninitialized sessions)
+
+COOKIE SETTINGS:
+- Secure: true in production (HTTPS only)
+- HttpOnly: true (prevent JavaScript access, mitigate XSS)
+- SameSite: strict (CSRF protection)
+- MaxAge: 24 hours
+
+REDIS SESSION STORE BENEFITS:
+- Sessions persist across server restarts
+- Multiple server instances share sessions
+- Bounded memory usage (Redis handles eviction)
+- Session data available for analytics
+- Supports distributed deployments
+
+SESSION ARCHITECTURE:
+
+Development (Redis unavailable):
+  Request → Express-session → In-memory store → Session in memory
+  ⚠️  Sessions lost on restart
+  ✓  Good for local development
+
+Production (Redis available):
+  Request → Express-session → Redis store → Redis database
+  ✓  Sessions persist
+  ✓  Multi-instance support
+  ✓  Scalable to multiple servers
+
+SESSION FLOW WITH REDIS:
+
+1. User Login:
+   a) Request with credentials arrives
+   b) Passport validates credentials
+   c) Session created: { userId: 1, passport: { user: {...} } }
+   d) Session ID generated (random string)
+   e) Session serialized to JSON
+   f) Session stored in Redis with key: `sess:{sessionId}`
+   g) Session cookie set: connect.sid={sessionId}
+   h) Cookie sent to client
+
+2. Subsequent Requests:
+   a) Request arrives with connect.sid cookie
+   b) Express-session middleware reads cookie
+   c) Session ID extracted from cookie
+   d) Redis queried for session: `sess:{sessionId}`
+   e) Session deseralized from JSON
+   f) User deserialized via passport.deserializeUser
+   g) req.user attached with user data and roles
+   h) Route handler executes with authenticated user
+
+3. Session Expiration:
+   a) Redis automatically expires session after TTL (24 hours)
+   b) Request with expired session ID
+   c) Redis returns null (session not found)
+   d) User treated as unauthenticated
+   e) Return 401, require re-login
+
+REDIS CONNECTION CONFIGURATION:
+
+Option 1: REDIS_URL (recommended for cloud deployments)
+  REDIS_URL=redis://[:password]@host:port/database
+  Example: REDIS_URL=redis://:mypassword@redis.example.com:6379/0
+
+Option 2: Separate configuration (for local development)
+  REDIS_HOST=localhost
+  REDIS_PORT=6379
+  REDIS_PASSWORD=optional_password
+
+Automatic fallback:
+  If Redis unavailable, sessions use in-memory store with warning:
+  "Session store: In-memory (Redis not available)"
+
+PRODUCTION CONSIDERATIONS:
+- Set SESSION_SECRET to strong random value (minimum 32 characters)
+  Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+- Use managed Redis service (AWS ElastiCache, Redis Cloud, etc.)
+- Enable Redis persistence (AOF or RDB snapshots)
+- Monitor Redis memory usage
+- Set Redis maxmemory policy: allkeys-lru (evict least recently used)
+- Enable Redis authentication with strong password
+- Use Redis over TLS for remote connections
+- Configure appropriate session timeout (default 24 hours)
+
+TROUBLESHOOTING SESSION ISSUES:
+
+1. "Session store: In-memory" warning in production
+   Cause: Redis not available or connection failed
+   Solution: Check REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
+   Solution: Verify Redis server is running and accessible
+   Solution: Check firewall rules for Redis port (6379)
+
+2. Sessions lost after server restart
+   Cause: In-memory store used (Redis unavailable)
+   Solution: Enable Redis (see configuration above)
+
+3. Users logged out unexpectedly
+   Cause: Session expired (24 hour TTL)
+   Behavior: Normal; users need to login again
+   Solution: Implement "remember me" with longer TTL if needed
+   Solution: Implement session refresh mechanism
+
+4. Multiple server instances have different sessions
+   Cause: Using in-memory store instead of Redis
+   Solution: Use Redis for session storage (shared across instances)
+
+================================================================================
+7. PROJECT STRUCTURE
+================================================================================
+
+BE/
+├── src/
+│   ├── app.js                      # Express app initialization
+│   ├── config/
+│   │   └── knex.js                 # Database connection configuration
+│   ├── controllers/
+│   │   ├── auth.controller.js      # Authentication request handlers
+│   │   └── project.controller.js   # Project request handlers
+│   ├── db/
+│   │   ├── migrations/             # Knex database migrations
+│   │   │   ├── 20260403_create_schema.js
+│   │   │   ├── 20260404_add_user_permissions.js
+│   │   │   ├── 20260404234524_adding_project_task_relation_in_tasks.js
+│   │   │   ├── 20260405005542_removing_owner_id_from_projects.js
+│   │   │   ├── 20260406190822_alter_permissions_table.js
+│   │   │   ├── 20260406225052_add_attribute_tables.js
+│   │   │   ├── 20260406235037_add_mode_column_to_user_attributes.js
+│   │   │   └── 20260407004121_add_table_permissions_and_permission_attributes.js
+│   │   └── seeds/
+│   │       └── permissions_seed.js # Initial permission data
+│   ├── middleware/
+│   │   └── auth.middleware.js      # Passport authentication + checkPerm
+│   ├── redis/
+│   │   └── client.js               # Redis connection and caching
+│   ├── repositories/
+│   │   ├── attribute.repo.js       # Attribute data access
+│   │   ├── permission.repo.js      # Permission data access
+│   │   ├── permissionAttributes.repo.js
+│   │   ├── project.repo.js         # Project data access
+│   │   ├── role.repo.js            # Role data access
+│   │   ├── roleAttributes.repos.js # Role-attribute linkage data access
+│   │   ├── user.repo.js            # User data access
+│   │   ├── userAttributes.repo.js  # User attribute override data access
+│   │   └── userRole.repo.js        # User-role linkage data access
+│   ├── routes/
+│   │   ├── authRouter.js           # Authentication routes
+│   │   └── projectRouter.js        # Project routes with permission checks
+│   ├── services/
+│   │   ├── auth.service.js         # Authentication business logic
+│   │   ├── pdp.service.js          # Permission Decision Point service
+│   │   └── project.service.js      # Project business logic
+│   └── utils/
+│       └── startServer.js          # Server startup configuration
+├── tests/
+│   ├── setup.js                    # Test suite configuration
+│   ├── integration/
+│   │   ├── authFlow.test.js        # Auth integration tests
+│   │   └── testSetup.js            # Test database setup
+│   └── unit/
+│       ├── auth.middleware.test.js # Middleware unit tests
+│       ├── pdp.service.test.js     # Permission service unit tests
+│       ├── permissionAttributes.repo.test.js
+│       ├── roleAttributes.repo.test.js
+│       └── userAttributes.repo.test.js
+├── dev.sqlite3                     # Development database
+├── jest.config.js                  # Jest test configuration
+├── knexfile.js                     # Knex migration configuration
+├── package.json                    # Node dependencies and scripts
+├── package-lock.json               # Dependency lock file
+├── ERD.txt                         # Entity Relationship Diagram
+├── fixes_report.txt                # Bug fixes documentation
+└── temp_register.json              # Temporary registration data
+
+================================================================================
+8. KEY COMPONENTS
+================================================================================
+
+8.1 CONTROLLERS - Request Handling
+-----------------------------------
+
+Role: HTTP request/response handling, input validation, service coordination
+
+Pattern:
+1. Extract data from request (body, params, query, session)
+2. Validate input data
+3. Call business logic service(s)
+4. Handle success/error responses
+5. Return appropriate HTTP status codes
+
+Example: createProject
+- Extract: req.body.name, req.body.description, req.user.id
+- Validate: name required and non-empty
+- Call: projectService.createProject(data, userId)
+- Handle: 201 on success, 400 on validation error
+- Return: JSON with created project or error message
+
+8.2 SERVICES - Business Logic
+-------------------------------
+
+Role: Implement application business rules, orchestrate repositories
+
+Pattern:
+1. Receive validated input from controller
+2. Apply business logic and rules
+3. Coordinate multiple repository calls if needed
+4. Enforce invariants (e.g., transactions)
+5. Return domain objects
+
+Example: createUser
+- Hash password with bcryptjs
+- Start transaction
+- Insert user record
+- Link to requested roles
+- Fetch complete user object
+- Commit transaction
+- Return user (without password)
+
+Benefit: If business rules change (e.g., password policy), change in one place
+
+8.3 REPOSITORIES - Data Access
+-------------------------------
+
+Role: Abstract database queries, provide domain-oriented interface
+
+Pattern:
+1. Accept domain objects/parameters
+2. Execute database queries
+3. Transform database results to domain objects
+4. Return results
+
+Example: getRolesForUser(userId)
+- Query: SELECT r.* FROM roles r 
+         INNER JOIN user_roles ur ON ur.role_id = r.id 
+         WHERE ur.user_id = ?
+- Transform: Convert rows to role objects
+- Return: Array of role objects
+
+Benefit: If schema changes, update in one place (not in services/controllers)
+
+8.4 MIDDLEWARE - Cross-Cutting Concerns
+---------------------------------------
+
+Role: Handle concerns that apply to many requests
+
+Implemented:
+1. Authentication (Passport)
+   - Validates credentials
+   - Manages sessions
+   - Deserializes user
+
+2. Permission Checking (checkPerm)
+   - Verifies user authenticated
+   - Evaluates permissions via PDP
+   - Denies access if insufficient permissions
+
+3. Error Handling
+   - Catches unhandled errors
+   - Logs errors
+   - Returns safe error response
+
+8.5 REDIS CLIENT - Caching
+---------------------------
+
+Purpose: Store and retrieve cached data across server instances
+
+Configuration:
+- Host: localhost (configurable via env)
+- Port: 6379 (standard Redis)
+- Graceful Fallback: If Redis unavailable, continue without cache
+
+Usage Pattern:
+1. Check cache: const data = await redisClient.get(key)
+2. Cache miss: Execute expensive operation
+3. Store result: await redisClient.setEx(key, ttl, value)
+4. On cache hit: Return cached value immediately
+
+Benefits:
+- Reduces database load
+- Improves response time (Redis ~1ms vs DB ~50ms)
+- Enables distributed caching across multiple servers
+- Easy cache invalidation with TTL
+
+================================================================================
+9. CONFIGURATION & SETUP
+================================================================================
+
+9.1 ENVIRONMENT VARIABLES
+--------------------------
+
+Create .env file in BE/ directory:
+
+# Server Configuration
+PORT=5000
+NODE_ENV=development
+
+# Session Configuration (IMPORTANT: Change in production)
+SESSION_SECRET=your_secure_random_string_here
+# Generate strong secret: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+# Database Configuration (Knex)
+DB_CLIENT=sqlite3  # or mysql2, pg
+DB_FILENAME=dev.sqlite3  # for sqlite3
+DB_HOST=localhost  # for mysql2/pg
+DB_PORT=3306  # for mysql2/pg
+DB_USER=root  # for mysql2/pg
+DB_PASSWORD=your_password  # for mysql2/pg
+DB_DATABASE=telos_db  # for mysql2/pg
+
+# Redis Configuration (Session store and permission caching)
+# Option 1: REDIS_URL (recommended for cloud deployments)
+REDIS_URL=redis://[:password]@localhost:6379/0
+
+# Option 2: Separate configuration (for local development)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=  # optional
+
+PRODUCTION ENVIRONMENT VARIABLES:
+- Set NODE_ENV=production for production deployments
+- Use strong SESSION_SECRET (minimum 32 characters, random)
+- Configure database to MySQL/PostgreSQL with credentials
+- Use managed Redis service (AWS ElastiCache, Redis Cloud, etc.)
+- Set REDIS_PASSWORD for Redis authentication
+- Verify all ports are accessible and firewalled appropriately
+
+See .env.example file for complete configuration template.
+
+9.2 DEPENDENCIES & INSTALLATION
+--------------------------------
+
+Install dependencies:
+  npm install
+
+Install optional dev dependencies:
+  npm install --save-dev jest supertest nodemon
+
+9.3 DATABASE SETUP
+------------------
+
+Run migrations to create schema:
+  npm run migrations  # or: npx knex migrate:latest
+
+Seed initial permissions:
+  npm run seed  # or: npx knex seed:run
+
+Check migration status:
+  npx knex migrate:status
+
+9.4 RUNNING THE APPLICATION
+----------------------------
+
+Development (with auto-reload):
+  npm run dev
+
+Production (no auto-reload):
+  npm start
+
+Running tests:
+  npm test  # runs Jest with --runInBand flag
+
+9.5 REDIS SETUP (OPTIONAL)
+---------------------------
+
+Redis is optional. If not available, caching gracefully degrades.
+
+To enable Redis:
+1. Install Redis server on your system
+2. Start Redis service
+3. Configure REDIS_HOST and REDIS_PORT in .env
+4. Application will automatically use Redis
+
+To test without Redis:
+- Leave REDIS_* env vars unset
+- Application will log warning and continue
+
+================================================================================
+10. TESTING
+================================================================================
+
+10.1 TEST FRAMEWORK
+-------------------
+
+Framework: Jest 30.3.0
+HTTP Testing: Supertest 7.2.2
+Environment: Node.js with SQLite for tests
+
+Configuration (jest.config.js):
+- Test environment: node
+- Match pattern: **/*.test.js
+- Test timeout: 10000ms
+- Run tests sequentially: --runInBand flag
+
+10.2 TEST STRUCTURE
+-------------------
+
+tests/
+├── setup.js                # Global test setup (test DB initialization)
+├── integration/            # Full flow tests
+│   ├── authFlow.test.js   # Auth registration/login flows
+│   └── testSetup.js       # Test database setup utilities
+└── unit/                  # Component unit tests
+    ├── auth.middleware.test.js
+    ├── pdp.service.test.js
+    ├── permissionAttributes.repo.test.js
+    ├── roleAttributes.repo.test.js
+    └── userAttributes.repo.test.js
+
+10.3 INTEGRATION TESTS
+---------------------
+
+File: tests/integration/authFlow.test.js
+
+Test Scenarios:
+1. User Registration
+   - Valid registration creates user
+   - Duplicate email rejected
+   - Default roles assigned
+
+2. User Login
+   - Valid credentials authenticate user
+   - Invalid password rejected
+   - User roles loaded after login
+
+3. Protected Routes
+   - Authenticated users can access protected routes
+   - Unauthenticated users get 401
+   - Permission checks enforced
+
+4. Logout
+   - Logout destroys session
+   - User cannot access protected routes after logout
+
+10.4 UNIT TESTS
+---------------
+
+Focus: Individual component behavior
+
+Examples:
+- auth.middleware.test.js
+  - checkPerm verifies authentication
+  - checkPerm verifies permissions
+  - checkPerm returns 403 for insufficient permissions
+
+- pdp.service.test.js
+  - Permission resolution combines role attributes
+  - User attributes override role attributes
+  - Cache hit returns correct result
+
+- Repository tests
+  - Verify query generation
+  - Verify result transformation
+  - Test error handling
+
+10.5 RUNNING TESTS
+------------------
+
+Run all tests:
+  npm test
+
+Run specific test file:
+  npm test authFlow.test.js
+
+Run with coverage:
+  npm test -- --coverage
+
+Watch mode (re-run on file change):
+  npm test -- --watch
+
+================================================================================
+11. DEVELOPMENT GUIDE
+================================================================================
+
+11.1 ADDING A NEW ENDPOINT
+--------------------------
+
+Steps:
+
+1. Define Route (in routes/newRouter.js)
+   ```javascript
+   const express = require('express');
+   const router = express.Router();
+   const { checkPerm } = require('../middleware/auth.middleware');
+   
+   router.get('/', checkPerm('read:item'), itemController.list);
+   module.exports = router;
+   ```
+
+2. Create Controller (in controllers/item.controller.js)
+   ```javascript
+   async function list(req, res) {
+     try {
+       const items = await itemService.listItems();
+       res.json(items);
+     } catch (err) {
+       res.status(500).json({ error: err.message });
+     }
+   }
+   module.exports = { list };
+   ```
+
+3. Create Service (in services/item.service.js)
+   ```javascript
+   async function listItems() {
+     return itemRepo.getAllItems();
+   }
+   module.exports = { listItems };
+   ```
+
+4. Create Repository (in repositories/item.repo.js)
+   ```javascript
+   async function getAllItems() {
+     return knex('items').select('*');
+   }
+   module.exports = { getAllItems };
+   ```
+
+5. Register Route (in app.js)
+   ```javascript
+   const itemRouter = require('./routes/itemRouter');
+   app.use('/api/items', itemRouter);
+   ```
+
+6. Add Tests (in tests/integration/item.test.js)
+
+11.2 ADDING A NEW PERMISSION
+----------------------------
+
+Steps:
+
+1. Create Permission in Seed/Migration
+   ```sql
+   INSERT INTO permissions (name) VALUES ('read:item');
+   ```
+
+2. Link Permission to Attributes
+   ```sql
+   INSERT INTO permission_attributes (permission_id, attribute_id)
+   SELECT p.id, a.id FROM permissions p, attributes a
+   WHERE p.name = 'read:item' AND a.name IN ('is_guest', 'is_member');
+   ```
+
+3. Use in Routes
+   ```javascript
+   router.get('/', checkPerm('read:item'), controller.list);
+   ```
+
+4. Test Permission Evaluation
+   - Create user with required role
+   - Verify permission granted
+   - Create user without required role
+   - Verify permission denied
+
+11.3 DEBUGGING PERMISSION ISSUES
+--------------------------------
+
+Common Issues & Solutions:
+
+1. User can't access endpoint (403)
+   - Check: User has required role
+   - Check: Role has required attributes
+   - Check: Permission requires attributes
+   - Debug: Call pdpService.getEffectivePermissions manually
+
+2. Cached permissions out of date
+   - Solution: Clear Redis cache
+     redis-cli FLUSHALL
+   - Solution: Restart server (clears in-memory cache)
+   - Solution: Wait for 5-min TTL to expire
+
+3. Role/attribute changes not taking effect
+   - Cause: Caching
+   - Solution: Clear relevant Redis key
+     redis-cli DEL user_permissions:{userId}
+
+11.4 ADDING A NEW ROLE
+---------------------
+
+Steps:
+
+1. Insert Role
+   ```sql
+   INSERT INTO roles (name) VALUES ('editor');
+   ```
+
+2. Define Attributes for Role
+   ```sql
+   INSERT INTO role_attributes (role_id, attribute_id)
+   SELECT r.id, a.id FROM roles r, attributes a
+   WHERE r.name = 'editor' AND a.name IN ('is_member', 'can_edit');
+   ```
+
+3. Link Permissions to Attributes (if needed)
+   - No changes needed; permissions already mapped to attributes
+
+4. Assign Users to Role
+   ```sql
+   INSERT INTO user_roles (user_id, role_id)
+   SELECT u.id, r.id FROM users u, roles r
+   WHERE u.email = 'editor@example.com' AND r.name = 'editor';
+   ```
+
+5. Verify
+   - User should have editor permissions
+   - Call /api/auth/me to verify roles
+
+11.5 PERFORMANCE OPTIMIZATION TIPS
+----------------------------------
+
+1. Index Key Columns
+   - users(email) - for login lookups
+   - user_roles(user_id) - for role fetches
+   - role_attributes(role_id) - for permission evaluation
+
+2. Use Redis for Production
+   - Significant improvement for high traffic
+   - Reduces database load by 80%+
+   - Essential for distributed deployments
+
+3. Batch Operations
+   - Use transactions for multiple inserts
+   - Reduces round-trips to database
+
+4. Profile Hot Paths
+   - Permission evaluation is most frequently called
+   - Monitor pdpService performance
+   - Consider caching strategy optimization
+
+5. Database Connection Pooling
+   - Knex handles connection pooling
+   - Configure pool size based on expected concurrency
+
+11.6 COMMON DEVELOPMENT COMMANDS
+--------------------------------
+
+Start development server with auto-reload:
+  npm run dev
+
+Run tests:
+  npm test
+
+Run single test:
+  npm test -- authFlow.test.js
+
+Create migration:
+  npx knex migrate:make migration_name
+
+Run migrations:
+  npx knex migrate:latest
+
+Rollback last migration:
+  npx knex migrate:rollback
+
+Run seed:
+  npx knex seed:run
+
+List migrations:
+  npx knex migrate:status
+
+View registered routes (dev only):
+  curl http://localhost:5000/api/routes
+
+================================================================================
+12. TROUBLESHOOTING
+================================================================================
+
+ISSUE: "Cannot find module knex"
+SOLUTION: npm install
+
+ISSUE: "Connection refused" for Redis
+SOLUTION: Redis optional; ignore warning or install Redis server
+
+ISSUE: "Cannot find module sqlite3"
+SOLUTION: npm install --build-from-source
+
+ISSUE: Tests fail with "Database locked"
+SOLUTION: Close other database connections; use --runInBand flag
+
+ISSUE: User can't login (401)
+SOLUTION: Verify email exists; verify password correct
+
+ISSUE: User logged in but can't access endpoint (403)
+SOLUTION: Check user's roles; check role attributes; check permission requirements
+
+ISSUE: Permission changes don't take effect immediately
+SOLUTION: Clear Redis cache (redis-cli FLUSHALL) or restart server
+
+================================================================================
+13. FUTURE ENHANCEMENTS
+================================================================================
+
+1. Multi-tenancy support
+   - Add tenant_id to users and projects tables
+   - Isolate data by tenant
+
+2. Audit logging
+   - Log all permission changes
+   - Track who made what changes when
+
+3. Advanced permission expressions
+   - Support OR conditions in permission requirements
+   - Currently only AND is supported
+
+4. API rate limiting
+   - Prevent abuse
+   - Implement exponential backoff
+
+5. GraphQL API
+   - Alternative to REST API
+   - Better performance for complex queries
+
+6. WebSocket support
+   - Real-time updates for project/task changes
+   - Real-time collaboration
+
+7. File attachments
+   - Support for task attachments
+   - File storage integration
+
+8. Notifications
+   - Email notifications for task assignments
+   - Real-time notifications for updates
+
+9. Advanced search
+   - Full-text search on projects/tasks
+   - Elasticsearch integration
+
+10. Analytics
+    - User activity dashboard
+    - Project statistics
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
+
+Generated: June 17, 2026
+Author: System Documentation Generator
+Version: 1.0
+Status: Complete
+
+This documentation serves as a comprehensive reference for the Telos backend
+system. It covers architecture, design patterns, implementation details, and
+operational guidance for developers and system administrators.
+
+For questions or updates, refer to code comments and test files for detailed
+implementation examples.

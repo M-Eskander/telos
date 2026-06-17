@@ -15,6 +15,59 @@ const _clearCache = () => {
 };
 
 /**
+ * Invalidate all permission caches in Redis
+ * Useful for administrative operations that affect many users
+ * @returns {Promise<number>} Number of keys deleted
+ */
+async function invalidateAllPermissionCaches() {
+  try {
+    if (!redisClient.isOpen && !redisClient.isReady) {
+      console.warn('Redis not available for cache invalidation');
+      return 0;
+    }
+
+    // Delete all user_permissions:* keys
+    const keys = await redisClient.keys('user_permissions:*');
+    let deleted = 0;
+
+    if (keys.length > 0) {
+      deleted = await redisClient.del(...keys);
+      console.log(`Invalidated ${deleted} user permission caches globally`);
+    }
+
+    return deleted;
+  } catch (err) {
+    console.error(`Failed to invalidate all permission caches: ${err.message}`);
+    throw err;
+  }
+}
+
+/**
+ * Invalidate permission cache for specific user
+ * @param {number} userId - User ID
+ * @returns {Promise<boolean>} True if cache was deleted
+ */
+async function invalidateUserPermissionCache(userId) {
+  const cacheKey = `user_permissions:${userId}`;
+  
+  try {
+    if (!redisClient.isOpen && !redisClient.isReady) {
+      return false;
+    }
+
+    const deleted = await redisClient.del(cacheKey);
+    if (deleted > 0) {
+      console.log(`Cache invalidated: ${cacheKey}`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.warn(`Failed to invalidate cache for user ${userId}: ${err.message}`);
+    return false;
+  }
+}
+
+/**
  * PRODUCTION PDP: Resolves all logic in one pass.
  * Replaces both getAttributes and getPermissions.
  */
@@ -88,4 +141,9 @@ async function getEffectivePermissions(userId, roles) {
     return effectivePermissions;
 }
 
-module.exports = { getEffectivePermissions, _clearCache };
+module.exports = { 
+    getEffectivePermissions, 
+    invalidateUserPermissionCache,
+    invalidateAllPermissionCaches,
+    _clearCache 
+};

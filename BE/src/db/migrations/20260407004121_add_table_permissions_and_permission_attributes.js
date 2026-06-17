@@ -18,7 +18,7 @@ exports.up = async function(knex) {
     await knex.schema.createTable('permission_attributes', (table) => {
       table.increments('id').primary();
 
-      table.integer('permission_id')
+      table.integer('permission_id').unsigned()
         .notNullable()
         .references('id')
         .inTable('permissions')

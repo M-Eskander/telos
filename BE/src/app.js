@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
+const RedisStore = require('connect-redis').default;
+const redisClient = require('./redis/client');
 const passport = require('./middleware/auth.middleware');
 const authRouter = require('./routes/authRouter');
 const projectRouter = require('./routes/projectRouter');
@@ -12,11 +14,29 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use(session({
+// Session configuration with Redis store
+// Falls back to memory store if Redis is unavailable (development)
+const sessionConfig = {
   secret: process.env.SESSION_SECRET || 'change_this_secret',
   resave: false,
-  saveUninitialized: false
-}));
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+    httpOnly: true, // Prevent XSS attacks
+    sameSite: 'strict', // CSRF protection
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
+};
+
+// Add Redis store if client is connected
+if (redisClient.isOpen || redisClient.isReady) {
+  sessionConfig.store = new RedisStore({ client: redisClient });
+  console.log('Session store: Redis');
+} else {
+  console.warn('Session store: In-memory (Redis not available)');
+}
+
+app.use(session(sessionConfig));
 
 app.use(passport.initialize());
 app.use(passport.session());
