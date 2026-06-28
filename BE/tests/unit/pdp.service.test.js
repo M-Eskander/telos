@@ -18,12 +18,16 @@ describe('PDP Service - getEffectivePermissions', () => {
     if (typeof _clearCache === 'function') {
       _clearCache();
     }
-    // Mock permission requirements cache
+    
+    // UPDATED: Mock permission requirements cache to use name + resource objects
     permissionAttributesRepo.getAllPermissionRequirements.mockResolvedValue({
-      'read:project': ['is_viewer'],
-      'create:project': ['is_admin'],
-      'delete:project': ['is_admin', 'is_owner'],
-      'read:task': ['is_viewer']
+      'read:project': [{ name: 'is_viewer', resource: 'project' }],
+      'create:project': [{ name: 'is_admin', resource: 'global' }],
+      'delete:project': [
+        { name: 'is_admin', resource: 'global' },
+        { name: 'is_owner', resource: 'project' }
+      ],
+      'read:task': [{ name: 'is_viewer', resource: 'task' }]
     });
 
     // Mock Redis as unavailable for most tests
@@ -33,11 +37,11 @@ describe('PDP Service - getEffectivePermissions', () => {
 
   describe('Remove Mode Logic', () => {
     test('should revoke role-granted permission when user has remove mode attribute', async () => {
-      // Role grants 'is_admin', user removes 'is_admin'
+      // Role grants 'is_admin' globally, user removes 'is_admin' globally
       roleAttributesRepo.getAttributesByRole
-        .mockResolvedValueOnce([{ name: 'is_admin' }]); // admin role
+        .mockResolvedValueOnce([{ name: 'is_admin', resource: 'global' }]); 
       userAttributesRepo.getAttributesByUser.mockResolvedValue([
-        { name: 'is_admin', mode: 'remove' }
+        { name: 'is_admin', resource: 'global', mode: 'remove' }
       ]);
 
       const permissions = await getEffectivePermissions(1, ['admin']);
@@ -46,26 +50,26 @@ describe('PDP Service - getEffectivePermissions', () => {
       expect(permissions).not.toContain('delete:project');
     });
 
-    test('should grant permission when user adds missing attribute', async () => {
-      // Role doesn't grant 'is_owner', user adds it
+    test('should grant permission when user adds missing attribute with matching resource context', async () => {
+      // Role grants 'is_admin' globally, doesn't grant 'is_owner' for project, user adds it
       roleAttributesRepo.getAttributesByRole
-        .mockResolvedValueOnce([{ name: 'is_admin' }]); // admin role
+        .mockResolvedValueOnce([{ name: 'is_admin', resource: 'global' }]); 
       userAttributesRepo.getAttributesByUser.mockResolvedValue([
-        { name: 'is_owner', mode: 'add' }
+        { name: 'is_owner', resource: 'project', mode: 'add' }
       ]);
 
       const permissions = await getEffectivePermissions(1, ['admin']);
 
       expect(permissions).toContain('create:project');
-      expect(permissions).toContain('delete:project'); // has both is_admin and is_owner
+      expect(permissions).toContain('delete:project'); // has both global:is_admin and project:is_owner
     });
   });
 
   describe('Multiple Role Support', () => {
     test('should merge attributes from multiple roles', async () => {
       roleAttributesRepo.getAttributesByRole
-        .mockResolvedValueOnce([{ name: 'is_viewer' }]) // viewer role
-        .mockResolvedValueOnce([{ name: 'is_admin' }]); // admin role
+        .mockResolvedValueOnce([{ name: 'is_viewer', resource: 'project' }]) // viewer role
+        .mockResolvedValueOnce([{ name: 'is_admin', resource: 'global' }]); // admin role
 
       userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
 
@@ -77,9 +81,9 @@ describe('PDP Service - getEffectivePermissions', () => {
   });
 
   describe('Permission Resolution', () => {
-    test('should grant permission when user has all required attributes', async () => {
+    test('should grant permission when user has all required attributes with exact resources', async () => {
       roleAttributesRepo.getAttributesByRole
-        .mockResolvedValue([{ name: 'is_admin' }, { name: 'is_owner' }]);
+        .mockResolvedValue([{ name: 'is_admin', resource: 'global' }, { name: 'is_owner', resource: 'project' }]);
       userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
 
       const permissions = await getEffectivePermissions(1, ['admin']);
@@ -87,9 +91,10 @@ describe('PDP Service - getEffectivePermissions', () => {
       expect(permissions).toContain('delete:project');
     });
 
-    test('should deny permission when user lacks required attribute', async () => {
+    test('should deny permission when user lacks required attribute resource matching', async () => {
+      // Has admin globally, but missing the owner attribute for the specific project resource
       roleAttributesRepo.getAttributesByRole
-        .mockResolvedValue([{ name: 'is_admin' }]); // missing is_owner
+        .mockResolvedValue([{ name: 'is_admin', resource: 'global' }]); 
       userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
 
       const permissions = await getEffectivePermissions(1, ['admin']);
@@ -130,15 +135,16 @@ describe('PDP Service - getEffectivePermissions', () => {
     });
 
     test('should cache computed permissions', async () => {
-      roleAttributesRepo.getAttributesByRole.mockResolvedValue([{ name: 'is_viewer' }]);
+      // Granting is_viewer for project, but not task
+      roleAttributesRepo.getAttributesByRole.mockResolvedValue([{ name: 'is_viewer', resource: 'project' }]);
       userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
 
-      await getEffectivePermissions(1, ['viewer']);
+      const permissions = await getEffectivePermissions(1, ['viewer']);
 
       expect(redisClient.setEx).toHaveBeenCalledWith(
         'user_permissions:1',
         300,
-        JSON.stringify(['read:project', 'read:task'])
+        JSON.stringify(['read:project']) // 'read:task' will not be here because it requires { name: 'is_viewer', resource: 'task' }
       );
     });
 
@@ -146,7 +152,7 @@ describe('PDP Service - getEffectivePermissions', () => {
       redisClient.get.mockRejectedValue(new Error('Redis unavailable'));
       redisClient.setEx.mockRejectedValue(new Error('Redis unavailable'));
 
-      roleAttributesRepo.getAttributesByRole.mockResolvedValue([{ name: 'is_viewer' }]);
+      roleAttributesRepo.getAttributesByRole.mockResolvedValue([{ name: 'is_viewer', resource: 'project' }]);
       userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
 
       const permissions = await getEffectivePermissions(1, ['viewer']);

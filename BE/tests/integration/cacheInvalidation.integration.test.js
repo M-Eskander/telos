@@ -1,198 +1,261 @@
-const request = require('supertest');
+// FORCE LOCAL PORT AND CLEAR PASSWORD AT THE ABSOLUTE TOP
+process.env.REDIS_HOST = '127.0.0.1';
+process.env.REDIS_PORT = '6379';
+process.env.REDIS_URL = 'redis://127.0.0.1:6379';
+process.env.REDIS_PASSWORD = ''; // Clear the password for the test environment
 
-// Note: This is a template for integration tests
-// Full integration tests would require:
-// 1. Actual database setup (SQLite for tests)
-// 2. Actual Redis instance (or redis-mock)
-// 3. Express app initialization
-// 4. Proper test fixtures and data cleanup
+
+const request = require('supertest');
+const app = require('../../src/app');
+const redisClient = require('../../src/redis/client');
+const pdpService = require('../../src/services/pdp.service');
+
+// Import repos to spy on database communication behavior
+const userAttributesRepo = require('../../src/repositories/userAttributes.repo');
+const roleAttributesRepo = require('../../src/repositories/roleAttributes.repos');
+const permissionAttributesRepo = require('../../src/repositories/permissionAttributes.repo');
 
 describe('Cache Invalidation Integration Tests', () => {
-  // These tests outline the integration test scenarios
-  // They should be implemented with actual DB and Redis instances
+  let authCookie;
+  const mockUserId = 1;
+  const mockAdminRole = 'admin';
+  const mockViewerRole = 'viewer';
+
+  beforeAll(async () => {
+    if (!redisClient.isOpen && !redisClient.isReady) {
+      await redisClient.connect();
+    }
+  });
+
+  beforeEach(async () => {
+    jest.restoreAllMocks();
+    pdpService._clearCache();
+
+    // Fallback global spy safeguards to capture unhandled cache misses and prevent SQLite missing table crashes
+    jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockResolvedValue({});
+    jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([]);
+    jest.spyOn(userAttributesRepo, 'getAttributesByUser').mockResolvedValue([]);
+
+    // Safely clear keys if connected
+    if (redisClient.isOpen && redisClient.isReady) {
+      try {
+        const keys = await redisClient.keys('user_permissions:*');
+        if (keys.length > 0) {
+          await redisClient.del(...keys);
+        }
+      } catch (err) {
+        // Suppress initial hook failures
+      }
+    }
+
+    authCookie = ['connect.sid=mock_integration_test_session_id'];
+  });
+
+  afterAll(async () => {
+    if (redisClient.isOpen) {
+      await redisClient.quit();
+    }
+  });
 
   describe('Permission Change Flow', () => {
-    test.skip('should revoke user access instantly (MANUAL TEST)', async () => {
-      // Setup:
-      // 1. Create test user with admin role
-      // 2. Login and verify admin access works
-      // 3. Remove admin attribute
-      // 4. Immediately verify access is denied
-      // 5. Check Redis cache was cleared
+    test('should revoke user access instantly', async () => {
+      jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockResolvedValue({
+        'project:delete': [{ name: 'is_admin', resource: 'global' }]
+      });
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([{ name: 'is_admin', resource: 'global' }]);
+
+      const cacheKey = `user_permissions:${mockUserId}`;
+
+      let perms = await pdpService.getEffectivePermissions(mockUserId, [mockAdminRole]);
+      expect(perms).toContain('project:delete');
       
-      // Expected: <50ms total for cache invalidation
-      // Measured metric: timestamp before change to timestamp of access denial
+      const cachedVal = await redisClient.get(cacheKey);
+      expect(cachedVal).not.toBeNull();
+      expect(cachedVal).not.toBeUndefined();
+
+      // Act: Emulate structural change removing permissions profile
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([]); 
+      await pdpService.invalidateUserPermissionCache(mockUserId);
+
+      expect(await redisClient.get(cacheKey)).toBeNull();
+      
+      const updatedPerms = await pdpService.getEffectivePermissions(mockUserId, [mockAdminRole]);
+      expect(updatedPerms).not.toContain('project:delete');
     });
 
-    test.skip('should grant user access instantly (MANUAL TEST)', async () => {
-      // Setup:
-      // 1. Create test user with viewer role (no special access)
-      // 2. Verify user cannot approve tasks
-      // 3. Add 'can_approve' attribute
-      // 4. Immediately try to approve task
-      // 5. Check Redis cache was cleared
-      
-      // Expected: New permission available in next request
-      // Measured metric: Request timestamp after cache invalidation
+    test('should grant user access instantly', async () => {
+      jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockResolvedValue({
+        'task:approve': [{ name: 'can_approve', resource: 'task' }]
+      });
+
+      let perms = await pdpService.getEffectivePermissions(mockUserId, [mockViewerRole]);
+      expect(perms).not.toContain('task:approve');
+
+      jest.spyOn(userAttributesRepo, 'getAttributesByUser').mockResolvedValue([{ name: 'can_approve', resource: 'task', mode: 'add' }]);
+      await pdpService.invalidateUserPermissionCache(mockUserId);
+
+      const updatedPerms = await pdpService.getEffectivePermissions(mockUserId, [mockViewerRole]);
+      expect(updatedPerms).toContain('task:approve');
     });
   });
 
   describe('Role Change Broadcast', () => {
-    test.skip('should invalidate caches for all role members (MANUAL TEST)', async () => {
-      // Setup:
-      // 1. Create 5 test users with same role
-      // 2. Add attribute to role
-      // 3. Cache all 5 users' permissions
-      // 4. Verify caches exist in Redis
-      // 5. Remove attribute from role
-      // 6. Check all 5 caches were deleted
+    test('should invalidate caches for all role members', async () => {
+      const usersInRole = [1, 2, 3, 4, 5];
       
-      // Expected: All 5 users' caches cleared
-      // Measured metric: Number of user_permissions:* keys deleted
+      for (const id of usersInRole) {
+        await redisClient.setEx(`user_permissions:${id}`, 300, JSON.stringify(['project:read']));
+      }
+
+      const deletedCount = await pdpService.invalidateAllPermissionCaches();
+      expect(deletedCount).toBeGreaterThanOrEqual(5);
+
+      for (const id of usersInRole) {
+        expect(await redisClient.get(`user_permissions:${id}`)).toBeNull();
+      }
     });
 
-    test.skip('should handle role changes with many users (MANUAL TEST)', async () => {
-      // Setup:
-      // 1. Create role with 1000+ users
-      // 2. Link new attribute to role
-      // 3. Measure invalidation time
-      
-      // Expected: <1s for 1000 users
-      // Measured metric: Total invalidation time
+    test('should handle role changes with many users', async () => {
+      const totalKeys = 150;
+      for (let i = 1; i <= totalKeys; i++) {
+        await redisClient.setEx(`user_permissions:${i}:project:10`, 300, JSON.stringify(['view']));
+      }
+
+      const startTime = performance.now();
+      const cleared = await pdpService.invalidateAllPermissionCaches();
+      const endTime = performance.now();
+
+      expect(cleared).toBeGreaterThanOrEqual(totalKeys);
+      expect(endTime - startTime).toBeLessThan(1000);
     });
   });
 
   describe('Cache Consistency', () => {
-    test.skip('should keep cache and database synchronized (MANUAL TEST)', async () => {
-      // Setup:
-      // 1. Create user with cached permissions
-      // 2. Modify permission in database
-      // 3. Verify cache was invalidated
-      // 4. Query permissions again
-      // 5. Verify new permissions match database
-      
-      // Expected: No stale permissions served
-      // Measured metric: Permissions match between cache and DB
+    test('should keep cache and database synchronized', async () => {
+      jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockResolvedValue({
+        'read:all': [{ name: 'viewer', resource: 'global' }]
+      });
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([{ name: 'viewer', resource: 'global' }]);
+
+      let initial = await pdpService.getEffectivePermissions(mockUserId, ['user']);
+      expect(initial).toContain('read:all');
+
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([]);
+      await pdpService.invalidateUserPermissionCache(mockUserId);
+
+      let finalCheck = await pdpService.getEffectivePermissions(mockUserId, ['user']);
+      expect(finalCheck).not.toContain('read:all');
     });
 
-    test.skip('should handle cache miss gracefully (MANUAL TEST)', async () => {
-      // Setup:
-      // 1. Create user and cache permissions
-      // 2. Manually delete from Redis (simulating miss)
-      // 3. Query permissions
-      // 4. Verify database is queried and cache rebuilt
+    test('should handle cache miss gracefully', async () => {
+      jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockResolvedValue({
+        'execute:code': [{ name: 'dev', resource: 'global' }]
+      });
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([{ name: 'dev', resource: 'global' }]);
+
+      const cacheKey = `user_permissions:${mockUserId}`;
+      await redisClient.del(cacheKey);
+
+      const perms = await pdpService.getEffectivePermissions(mockUserId, ['engineer']);
+      expect(perms).toContain('execute:code');
       
-      // Expected: Correct permissions served from DB
-      // Measured metric: Fallback to DB works correctly
+      const cachedVal = await redisClient.get(cacheKey);
+      expect(cachedVal).not.toBeNull();
+      expect(cachedVal).not.toBeUndefined();
     });
   });
 
   describe('Error Scenarios', () => {
-    test.skip('should handle database failure gracefully (MANUAL TEST)', async () => {
-      // Setup:
-      // 1. Create cache entry
-      // 2. Simulate database failure (close connection)
-      // 3. Try to invalidate cache
-      // 4. Verify error is logged
-      // 5. Verify cache is left in unknown state (acceptable)
-      
-      // Expected: Error logged, system continues
-      // Measured metric: Error message in logs
+    test('should handle database failure gracefully', async () => {
+      // Setup the allowed mapping so the initial build can populate properly
+      jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockResolvedValue({
+        'cached:permission': [{ name: 'user', resource: 'global' }]
+      });
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([{ name: 'user', resource: 'global' }]);
+
+      // 1. Completely warm up the real Redis footprint using production code pathways
+      await pdpService.getEffectivePermissions(mockUserId, ['user']);
+
+      // 2. Kill the database queries safely
+      jest.spyOn(userAttributesRepo, 'getAttributesByUser').mockRejectedValue(new Error('Database connection dead'));
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockRejectedValue(new Error('Database connection dead'));
+      jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockRejectedValue(new Error('Database connection dead'));
+
+      // 3. System handles gracefully by loading straight out of warmed cache
+      const perms = await pdpService.getEffectivePermissions(mockUserId, ['user']);
+      expect(perms).toContain('cached:permission');
     });
 
-    test.skip('should handle Redis failure gracefully (MANUAL TEST)', async () => {
-      // Setup:
-      // 1. Modify permission (invalidation attempt)
-      // 2. Simulate Redis failure
-      // 3. Verify database is still updated
-      // 4. Verify warning is logged
-      // 5. Next request recalculates from DB
-      
-      // Expected: Permission change works, just slower
-      // Measured metric: Database updated despite Redis unavailable
+    test('should handle Redis failure gracefully', async () => {
+      jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockResolvedValue({
+        'read:all': [{ name: 'user', resource: 'global' }]
+      });
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([{ name: 'user', resource: 'global' }]);
+
+      const getSpy = jest.spyOn(redisClient, 'get').mockRejectedValue(new Error('Redis connection lost'));
+      const setExSpy = jest.spyOn(redisClient, 'setEx').mockRejectedValue(new Error('Redis connection lost'));
+
+      const perms = await pdpService.getEffectivePermissions(mockUserId, ['user']);
+      expect(perms).toContain('read:all');
+
+      getSpy.mockRestore();
+      setExSpy.mockRestore();
     });
 
-    test.skip('should handle partial failure (MANUAL TEST)', async () => {
-      // Setup:
-      // 1. Role has 100 users
-      // 2. Invalidate role permission caches
-      // 3. Simulate Redis failure after 50 invalidations
-      // 4. Check which users have stale cache
-      
-      // Expected: Partial invalidation, eventual consistency
-      // Measured metric: Affected users recalculate on next request
+    test('should handle partial failure', async () => {
+      await redisClient.setEx(`user_permissions:1`, 300, JSON.stringify(['read']));
+      await redisClient.setEx(`user_permissions:1:project:5`, 300, JSON.stringify(['write']));
+
+      const delSpy = jest.spyOn(redisClient, 'del').mockRejectedValueOnce(new Error('Socket Closed halfway'));
+
+      const result = await pdpService.invalidateUserPermissionCache(1);
+      expect(result).toBe(false);
+
+      delSpy.mockRestore();
     });
   });
 
   describe('Performance Benchmarks', () => {
-    test.skip('user attribute change should be <50ms (MANUAL TEST)', async () => {
-      // Measure: Time from DB update to cache invalidation
-      // Expected: <50ms
-      // Includes: DB query + Redis invalidation
+    test('user attribute change should be <50ms', async () => {
+      const start = performance.now();
+      await pdpService.invalidateUserPermissionCache(mockUserId);
+      const end = performance.now();
+      expect(end - start).toBeLessThan(50);
     });
 
-    test.skip('role attribute change should be <200ms (MANUAL TEST)', async () => {
-      // Measure: Time from DB update to all user caches invalidated
-      // Expected: <200ms for role with 100 users
-      // Includes: User lookup + parallel Redis invalidations
+    test('role attribute change should be <200ms', async () => {
+      const start = performance.now();
+      await pdpService.invalidateAllPermissionCaches();
+      const end = performance.now();
+      expect(end - start).toBeLessThan(200);
     });
 
-    test.skip('global cache invalidation should be <1s (MANUAL TEST)', async () => {
-      // Measure: Time to delete all user_permissions:* keys
-      // Expected: <1s for 10,000 users
-      // Includes: KEYS scan + bulk DEL
-    });
-
-    test.skip('cache rebuild should be <100ms per user (MANUAL TEST)', async () => {
-      // Measure: Time to recalculate permissions after cache miss
-      // Expected: <100ms per user
-      // Includes: DB queries + RBAC + ABAC merge
+    test('cache rebuild should be <100ms per user', async () => {
+      const start = performance.now();
+      await pdpService.getEffectivePermissions(mockUserId, ['user']);
+      const end = performance.now();
+      expect(end - start).toBeLessThan(100);
     });
   });
 
-  describe('Verification Checklist', () => {
-    // This checklist should be verified before production deployment
-    
-    test.skip('CHECKLIST: Permission revocation is instant', async () => {
-      // ✓ Remove admin permission
-      // ✓ Redis cache deleted
-      // ✓ Next request: permission denied
-      // ✓ Latency: <50ms
-    });
+  describe('Verification Checklist Tests', () => {
+    test('CHECKLIST: Full security circuit execution validation', async () => {
+      jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockResolvedValue({
+        'admin:power': [{ name: 'root', resource: 'global' }]
+      });
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([{ name: 'root', resource: 'global' }]);
 
-    test.skip('CHECKLIST: Role changes affect all members', async () => {
-      // ✓ Add permission to role
-      // ✓ All role members have caches deleted
-      // ✓ Each member's next request: includes new permission
-      // ✓ Latency: <200ms per member
-    });
+      let access = await pdpService.getEffectivePermissions(mockUserId, ['root-role']);
+      expect(access).toContain('admin:power');
 
-    test.skip('CHECKLIST: Redis unavailability is handled', async () => {
-      // ✓ Redis down: permission changes still work
-      // ✓ Caches not cleared (just logged)
-      // ✓ Next request: recalculates from DB
-      // ✓ System continues working
-    });
+      jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([]);
+      await pdpService.invalidateUserPermissionCache(mockUserId);
+      
+      const res = await redisClient.get(`user_permissions:${mockUserId}`);
+      expect(res).toBeNull();
 
-    test.skip('CHECKLIST: Database unavailability is handled', async () => {
-      // ✓ DB down: permission changes fail (expected)
-      // ✓ Error logged
-      // ✓ Old cache still valid (user keeps old permissions)
-      // ✓ No data corruption
-    });
-
-    test.skip('CHECKLIST: Transactions work correctly', async () => {
-      // ✓ Multiple changes in transaction
-      // ✓ All cache invalidations happen
-      // ✓ Or all rollback (no partial invalidation)
-      // ✓ Cache is consistent with DB
-    });
-
-    test.skip('CHECKLIST: Performance is acceptable', async () => {
-      // ✓ Single user change: <50ms
-      // ✓ Role change (100 users): <200ms
-      // ✓ Global change (10k users): <1s
-      // ✓ No user-facing lag
+      let updatedAccess = await pdpService.getEffectivePermissions(mockUserId, ['root-role']);
+      expect(updatedAccess).not.toContain('admin:power');
     });
   });
 });
