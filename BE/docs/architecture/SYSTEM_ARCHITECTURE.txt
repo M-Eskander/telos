@@ -1,6 +1,6 @@
 ================================================================================
-                     TELOS BACKEND SYSTEM DOCUMENTATION
-                          Version 1.0 - June 2026
+                    TELOS BACKEND SYSTEM DOCUMENTATION
+                         Version 1.1 - June 2026
 ================================================================================
 
 TABLE OF CONTENTS
@@ -31,17 +31,17 @@ KEY FEATURES:
 - Task assignment and tracking
 - Fine-grained access control using hybrid RBAC (Role-Based Access Control) 
   combined with ABAC (Attribute-Based Access Control)
-- Redis-based permission caching for high performance
+- Redis-based permission caching with an automatic, resilient in-memory fallback
 - Multi-database support (SQLite for dev, MySQL/PostgreSQL for production)
 
 TECHNOLOGY STACK:
-- Runtime: Node.js
+- Runtime: Node.js (v18+ prioritizing IPv4 interface binding)
 - Web Framework: Express.js 5.2.1
 - Database: SQLite (dev), MySQL/PostgreSQL (prod) via Knex.js 3.2.8
 - Authentication: Passport.js with LocalStrategy
 - Session Management: express-session with Redis store (connect-redis)
 - Caching: Redis 5.12.1
-  * User permissions cache (per-user TTL)
+  * User permissions cache (per-user TTL with standalone backup store)
   * Session store (persistent across restarts)
 - Password Hashing: bcryptjs 3.0.3
 - Testing: Jest 30.3.0 + Supertest 7.2.2
@@ -70,8 +70,8 @@ ARCHITECTURAL PATTERN: Layered N-Tier Architecture
                                    │
                     ┌──────────────▼──────────────┐
                     │   Express Route Handlers    │
-                    │  - /api/auth/*              │
-                    │  - /api/projects/*          │
+                    │  - /api/auth/* │
+                    │  - /api/projects/* │
                     └──────────────┬──────────────┘
                                    │
                     ┌──────────────▼──────────────┐
@@ -105,7 +105,7 @@ ARCHITECTURAL PATTERN: Layered N-Tier Architecture
         │                          │                          │
    ┌────▼────┐          ┌──────────▼──────────┐      ┌───────▼────┐
    │ SQLite  │          │ Redis Caching Layer │      │ Knex Query │
-   │Database │          │ (Permissions)       │      │ Builder    │
+   │Database │          │ (Permissions + Fall)│      │ Builder    │
    └─────────┘          └─────────────────────┘      └────────────┘
 
 DESIGN PRINCIPLES:
@@ -134,10 +134,12 @@ DESIGN PRINCIPLES:
    - Testable data access
    - Easy migration between databases
 
-5. CACHING STRATEGY
-   - Two-level caching: in-memory + Redis
+5. CACHING STRATEGY & RESILIENCE
+   - Hybrid multi-tiered caching: Local in-memory + Redis connection layer
    - Global permission requirements cache (5 min TTL)
    - Per-user permission cache in Redis (5 min TTL)
+   - **Automatic In-Memory Fallback:** If the Redis socket closes halfway or encounters
+     connection drops, the PDP service switches transparently to local process memory arrays.
    - Reduces database queries by 80%+
 
 ================================================================================
@@ -152,7 +154,7 @@ The Express application is initialized with:
 1. Middleware Stack:
    - express.json() - Parse JSON request bodies
    - express.urlencoded({extended: true}) - Parse URL-encoded bodies
-   - express-session - Session persistence (stored in-memory by default)
+   - express-session - Session persistence (defaults to memory buffer if Redis fails)
    - passport.initialize() - Initialize Passport authentication
    - passport.session() - Use Passport with session support
 
@@ -246,12 +248,11 @@ STEP 1: Load Permission Requirements (Global Cache)
 - Cache Structure: { "create:project": ["is_admin"], "delete:project": ["is_admin", "is_owner"], ... }
 - Purpose: Prevents repeated database queries for rarely-changing configuration
 
-STEP 2: Check User Permission Cache (Redis)
+STEP 2: Check User Permission Cache (Redis + Memory Fallback)
 - Create cache key: `user_permissions:{userId}`
-- Query Redis cache
+- Attempt query via `redisClient.get`
 - If found, return cached result immediately (5 min TTL)
-- Purpose: Eliminates database queries for repeated requests from same user
-- Graceful Fallback: If Redis unavailable, continue without cache warning
+- **Graceful Fallback Core Logic:** If `redisClient.isOpen` or `isReady` evaluates to false, or if a structural socket connection loss triggers an error, the system traps the exception gracefully, logs a `Redis not available` warning, and queries the local JavaScript memory cache layer instead to shield the active runtime from crashes.
 
 STEP 3: Data Gathering (Parallel I/O)
 - Extract role names from roles array (handles both objects and strings)
@@ -274,10 +275,9 @@ STEP 5: Permission Filtering
 - Filter logic: requiredAttrs.every(attrName => finalAttrNames.has(attrName))
 - Return only permissions where every required attribute is present
 
-STEP 6: Cache Result in Redis
-- Store effective permissions in Redis with 5-minute TTL
-- Format: JSON string of permission array
-- Ignore cache errors (non-blocking)
+STEP 6: Cache Result in Target Layer
+- If Redis is responsive, store effective permissions as an array JSON string with a 5-minute TTL.
+- If running on backup infrastructure, update internal storage segments.
 
 CACHING ARCHITECTURE:
 
@@ -291,15 +291,15 @@ Level 1 - Permission Requirements Cache:
 
 Level 2 - User Permission Cache:
 - Scope: Per-user
-- Storage: Redis (shared across server instances)
+- Storage: Redis (shared across server instances) with parallel memory fallback
 - TTL: 5 minutes
-- Invalidation: Time-based or manual via Redis
+- Invalidation: Time-based or manual via eviction hooks
 - Hit Rate Impact: Medium (depends on request patterns)
 - Purpose: Eliminate role/attribute queries for active users
 
 PERFORMANCE CHARACTERISTICS:
 - Cache Hit (both levels): ~2ms
-- Redis Fallback: ~50-100ms (role + attribute queries)
+- Redis Fallback / Miss: ~50-100ms (role + attribute queries)
 - Cold Start: ~150-200ms (all queries + caching)
 
 3.4 AUTHENTICATION SERVICE (src/services/auth.service.js)
@@ -494,12 +494,14 @@ project.repo.js:
 DATABASE CONFIGURATION: Knex.js Query Builder
 Supported: SQLite (dev), MySQL 8+, PostgreSQL 10+
 
+**CRITICAL IMPLEMENTATION NOTE ON CONSTRAINTS:** To prevent relational schema migration failures across strict database backends (e.g., MySQL InnoDB), all foreign key destination targets utilize strict **UNSIGNED INTEGER** constraints. Failure to match unsigned attributes on junction points breaks table binding constraints.
+
 CORE TABLES:
 
 users
 -------
 CREATE TABLE users (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   name            VARCHAR(255) NOT NULL,
   phone_number    VARCHAR(20),
   email           VARCHAR(255) UNIQUE NOT NULL,
@@ -518,7 +520,7 @@ DESCRIPTION:
 roles
 ------
 CREATE TABLE roles (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   name            VARCHAR(255) UNIQUE NOT NULL,
   description     TEXT,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -532,7 +534,7 @@ DESCRIPTION:
 permissions
 -----------
 CREATE TABLE permissions (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   name            VARCHAR(255) UNIQUE NOT NULL,
   description     TEXT,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -546,7 +548,7 @@ DESCRIPTION:
 attributes
 ----------
 CREATE TABLE attributes (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   name            VARCHAR(255) UNIQUE NOT NULL,
   description     TEXT,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -560,10 +562,10 @@ DESCRIPTION:
 projects
 --------
 CREATE TABLE projects (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   name            VARCHAR(255) NOT NULL,
   description     TEXT,
-  creator_by      INT NOT NULL,
+  creator_by      INT UNSIGNED NOT NULL,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (creator_by) REFERENCES users(id)
@@ -577,13 +579,13 @@ DESCRIPTION:
 tasks
 -----
 CREATE TABLE tasks (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   title           VARCHAR(255) NOT NULL,
   description     TEXT,
   status          VARCHAR(50) DEFAULT 'open',
   priority        VARCHAR(50) DEFAULT 'medium',
-  project_id      INT NOT NULL,
-  assigned_to     INT,
+  project_id      INT UNSIGNED NOT NULL,
+  assigned_to     INT UNSIGNED,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (project_id) REFERENCES projects(id),
@@ -599,7 +601,7 @@ DESCRIPTION:
 status
 ------
 CREATE TABLE status (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   name            VARCHAR(100) UNIQUE NOT NULL,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -613,9 +615,9 @@ JUNCTION/LINKING TABLES:
 user_roles
 ----------
 CREATE TABLE user_roles (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
-  user_id         INT NOT NULL,
-  role_id         INT NOT NULL,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  user_id         INT UNSIGNED NOT NULL,
+  role_id         INT UNSIGNED NOT NULL,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(user_id, role_id),
   FOREIGN KEY (user_id) REFERENCES users(id),
@@ -630,9 +632,9 @@ DESCRIPTION:
 role_attributes
 ---------------
 CREATE TABLE role_attributes (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
-  role_id         INT NOT NULL,
-  attribute_id    INT NOT NULL,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  role_id         INT UNSIGNED NOT NULL,
+  attribute_id    INT UNSIGNED NOT NULL,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(role_id, attribute_id),
   FOREIGN KEY (role_id) REFERENCES roles(id),
@@ -647,9 +649,9 @@ DESCRIPTION:
 user_attributes
 ---------------
 CREATE TABLE user_attributes (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
-  user_id         INT NOT NULL,
-  attribute_id    INT NOT NULL,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  user_id         INT UNSIGNED NOT NULL,
+  attribute_id    INT UNSIGNED NOT NULL,
   mode            ENUM('add', 'remove') DEFAULT 'add',
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(user_id, attribute_id),
@@ -666,9 +668,9 @@ DESCRIPTION:
 permission_attributes
 ---------------------
 CREATE TABLE permission_attributes (
-  id              INT PRIMARY KEY AUTO_INCREMENT,
-  permission_id   INT NOT NULL,
-  attribute_id    INT NOT NULL,
+  id              INT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  permission_id   INT UNSIGNED NOT NULL,
+  attribute_id    INT UNSIGNED NOT NULL,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(permission_id, attribute_id),
   FOREIGN KEY (permission_id) REFERENCES permissions(id),
@@ -914,7 +916,7 @@ TIER 1: ROLE-BASED ACCESS CONTROL (RBAC)
 
 Flow: User → Role → Attributes
 Example:
-  User "alice" → Role "admin" → Attributes ["is_admin", "is_owner"]
+  User "alice" → Role "admin"  → Attributes ["is_admin", "is_owner"]
   User "bob"   → Role "viewer" → Attributes ["is_guest"]
 
 TIER 2: PERMISSION-ATTRIBUTE MAPPING
@@ -924,10 +926,10 @@ TIER 2: PERMISSION-ATTRIBUTE MAPPING
 - Decouples roles from permissions (flexible changes)
 
 Example Permission Requirements:
-  "read:project"    requires ["is_guest"]                    // viewers can read
-  "update:project"  requires ["is_owner"]                    // owners can update
-  "delete:project"  requires ["is_admin", "is_owner"]        // admin owners only
-  "manage:roles"    requires ["is_admin"]                    // admins only
+  "read:project"    requires ["is_guest"]                     // viewers can read
+  "update:project"  requires ["is_owner"]                     // owners can update
+  "delete:project"  requires ["is_admin", "is_owner"]         // admin owners only
+  "manage:roles"    requires ["is_admin"]                     // admins only
 
 TIER 3: USER-LEVEL ATTRIBUTE OVERRIDE (ABAC)
 --------------------------------------------
@@ -961,9 +963,11 @@ ALGORITHM:
    ELSE:
      permissionReqs = permissionReqs_cache.get()
 
-3. Check user permission cache (Redis)
-   IF Redis.exists(userPerms_key):
+3. Check user permission cache (Redis / Process Fallback)
+   IF Redis.isActive() AND Redis.exists(userPerms_key):
      RETURN JSON.parse(Redis.get(userPerms_key))
+   ELSE IF FallbackMemoryStore.exists(userPerms_key):
+     RETURN FallbackMemoryStore.get(userPerms_key)
 
 4. Fetch user's role attributes (parallel)
    FOR EACH role IN roles:
@@ -984,459 +988,35 @@ ALGORITHM:
    
    effectiveAttrNames = Set(effectiveAttrs.keys())
 
-7. Filter permissions (Logical AND)
+7. Filter permissions (Logical AND Execution)
    effectivePerms = []
    FOR EACH permission IN permissionReqs:
      requiredAttrs = permissionReqs[permission]
      IF requiredAttrs.every(attr => effectiveAttrNames.has(attr)):
        effectivePerms.push(permission)
-   
+
+8. Commit to Cache Tier
+   IF Redis.isActive():
+     Redis.setEx(userPerms_key, 300, JSON.stringify(effectivePerms))
+   ELSE:
+     FallbackMemoryStore.set(userPerms_key, effectivePerms)
+
    RETURN effectivePerms
 
-8. Cache result (Redis, 5-min TTL)
-   Redis.setEx(userPerms_key, 300, JSON.stringify(effectivePerms))
-
-6.3 AUTHENTICATION FLOW
------------------------
-
-REGISTRATION:
-1. User submits: name, phone_number, email, password, roles (optional)
-2. Server validates input
-3. Server checks email not already registered
-4. Server hashes password with bcryptjs (10 rounds)
-5. Server creates database transaction
-6. Server inserts user record
-7. Server links user to each requested role
-8. Server commits transaction
-9. Server returns user object (no password)
-10. Error cases: Return 400 for validation, 409 for duplicate email
-
-LOGIN:
-1. User submits: email, password
-2. Passport LocalStrategy triggers
-3. Strategy looks up user by email
-4. Strategy compares provided password with stored hash
-5. Strategy fetches user's roles
-6. Strategy returns user object to Passport (no password)
-7. Passport serializes user ID to session
-8. Express-session stores session in memory
-9. Session cookie sent to client
-10. Error cases: Return 401 for invalid credentials
-
-SESSION PERSISTENCE:
-1. Client sends request with session cookie
-2. Express-session middleware retrieves session by cookie ID
-3. Passport deserializeUser hook triggers
-4. Hook fetches full user object from database by ID
-5. Hook fetches current user roles (ensures up-to-date)
-6. User object attached to req.user
-7. User available to route handlers
-8. Error cases: Return 401 if session invalid or user deleted
-
-LOGOUT:
-1. User submits logout request
-2. req.logout() called
-3. Session destroyed
-4. Session cookie cleared
-5. User redirected to login
-
-6.4 SESSION CONFIGURATION
--------------------------
-
-SESSION STORAGE: Redis (recommended for production)
-FALLBACK: In-memory store (if Redis unavailable)
-Session Secret: process.env.SESSION_SECRET or 'change_this_secret'
-Resave: false (don't resave unmodified sessions)
-SaveUninitialized: false (don't save uninitialized sessions)
-
-COOKIE SETTINGS:
-- Secure: true in production (HTTPS only)
-- HttpOnly: true (prevent JavaScript access, mitigate XSS)
-- SameSite: strict (CSRF protection)
-- MaxAge: 24 hours
-
-REDIS SESSION STORE BENEFITS:
-- Sessions persist across server restarts
-- Multiple server instances share sessions
-- Bounded memory usage (Redis handles eviction)
-- Session data available for analytics
-- Supports distributed deployments
-
-SESSION ARCHITECTURE:
-
-Development (Redis unavailable):
-  Request → Express-session → In-memory store → Session in memory
-  ⚠️  Sessions lost on restart
-  ✓  Good for local development
-
-Production (Redis available):
-  Request → Express-session → Redis store → Redis database
-  ✓  Sessions persist
-  ✓  Multi-instance support
-  ✓  Scalable to multiple servers
-
-SESSION FLOW WITH REDIS:
-
-1. User Login:
-   a) Request with credentials arrives
-   b) Passport validates credentials
-   c) Session created: { userId: 1, passport: { user: {...} } }
-   d) Session ID generated (random string)
-   e) Session serialized to JSON
-   f) Session stored in Redis with key: `sess:{sessionId}`
-   g) Session cookie set: connect.sid={sessionId}
-   h) Cookie sent to client
-
-2. Subsequent Requests:
-   a) Request arrives with connect.sid cookie
-   b) Express-session middleware reads cookie
-   c) Session ID extracted from cookie
-   d) Redis queried for session: `sess:{sessionId}`
-   e) Session deseralized from JSON
-   f) User deserialized via passport.deserializeUser
-   g) req.user attached with user data and roles
-   h) Route handler executes with authenticated user
-
-3. Session Expiration:
-   a) Redis automatically expires session after TTL (24 hours)
-   b) Request with expired session ID
-   c) Redis returns null (session not found)
-   d) User treated as unauthenticated
-   e) Return 401, require re-login
-
-REDIS CONNECTION CONFIGURATION:
-
-Option 1: REDIS_URL (recommended for cloud deployments)
-  REDIS_URL=redis://[:password]@host:port/database
-  Example: REDIS_URL=redis://:mypassword@redis.example.com:6379/0
-
-Option 2: Separate configuration (for local development)
-  REDIS_HOST=localhost
-  REDIS_PORT=6379
-  REDIS_PASSWORD=optional_password
-
-Automatic fallback:
-  If Redis unavailable, sessions use in-memory store with warning:
-  "Session store: In-memory (Redis not available)"
-
-PRODUCTION CONSIDERATIONS:
-- Set SESSION_SECRET to strong random value (minimum 32 characters)
-  Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-- Use managed Redis service (AWS ElastiCache, Redis Cloud, etc.)
-- Enable Redis persistence (AOF or RDB snapshots)
-- Monitor Redis memory usage
-- Set Redis maxmemory policy: allkeys-lru (evict least recently used)
-- Enable Redis authentication with strong password
-- Use Redis over TLS for remote connections
-- Configure appropriate session timeout (default 24 hours)
-
-TROUBLESHOOTING SESSION ISSUES:
-
-1. "Session store: In-memory" warning in production
-   Cause: Redis not available or connection failed
-   Solution: Check REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
-   Solution: Verify Redis server is running and accessible
-   Solution: Check firewall rules for Redis port (6379)
-
-2. Sessions lost after server restart
-   Cause: In-memory store used (Redis unavailable)
-   Solution: Enable Redis (see configuration above)
-
-3. Users logged out unexpectedly
-   Cause: Session expired (24 hour TTL)
-   Behavior: Normal; users need to login again
-   Solution: Implement "remember me" with longer TTL if needed
-   Solution: Implement session refresh mechanism
-
-4. Multiple server instances have different sessions
-   Cause: Using in-memory store instead of Redis
-   Solution: Use Redis for session storage (shared across instances)
-
 ================================================================================
-7. PROJECT STRUCTURE
+10. TESTING & NETWORKING MATRIX
 ================================================================================
 
-BE/
-├── src/
-│   ├── app.js                      # Express app initialization
-│   ├── config/
-│   │   └── knex.js                 # Database connection configuration
-│   ├── controllers/
-│   │   ├── auth.controller.js      # Authentication request handlers
-│   │   └── project.controller.js   # Project request handlers
-│   ├── db/
-│   │   ├── migrations/             # Knex database migrations
-│   │   │   ├── 20260403_create_schema.js
-│   │   │   ├── 20260404_add_user_permissions.js
-│   │   │   ├── 20260404234524_adding_project_task_relation_in_tasks.js
-│   │   │   ├── 20260405005542_removing_owner_id_from_projects.js
-│   │   │   ├── 20260406190822_alter_permissions_table.js
-│   │   │   ├── 20260406225052_add_attribute_tables.js
-│   │   │   ├── 20260406235037_add_mode_column_to_user_attributes.js
-│   │   │   └── 20260407004121_add_table_permissions_and_permission_attributes.js
-│   │   └── seeds/
-│   │       └── permissions_seed.js # Initial permission data
-│   ├── middleware/
-│   │   └── auth.middleware.js      # Passport authentication + checkPerm
-│   ├── redis/
-│   │   └── client.js               # Redis connection and caching
-│   ├── repositories/
-│   │   ├── attribute.repo.js       # Attribute data access
-│   │   ├── permission.repo.js      # Permission data access
-│   │   ├── permissionAttributes.repo.js
-│   │   ├── project.repo.js         # Project data access
-│   │   ├── role.repo.js            # Role data access
-│   │   ├── roleAttributes.repos.js # Role-attribute linkage data access
-│   │   ├── user.repo.js            # User data access
-│   │   ├── userAttributes.repo.js  # User attribute override data access
-│   │   └── userRole.repo.js        # User-role linkage data access
-│   ├── routes/
-│   │   ├── authRouter.js           # Authentication routes
-│   │   └── projectRouter.js        # Project routes with permission checks
-│   ├── services/
-│   │   ├── auth.service.js         # Authentication business logic
-│   │   ├── pdp.service.js          # Permission Decision Point service
-│   │   └── project.service.js      # Project business logic
-│   └── utils/
-│       └── startServer.js          # Server startup configuration
-├── tests/
-│   ├── setup.js                    # Test suite configuration
-│   ├── integration/
-│   │   ├── authFlow.test.js        # Auth integration tests
-│   │   └── testSetup.js            # Test database setup
-│   └── unit/
-│       ├── auth.middleware.test.js # Middleware unit tests
-│       ├── pdp.service.test.js     # Permission service unit tests
-│       ├── permissionAttributes.repo.test.js
-│       ├── roleAttributes.repo.test.js
-│       └── userAttributes.repo.test.js
-├── dev.sqlite3                     # Development database
-├── jest.config.js                  # Jest test configuration
-├── knexfile.js                     # Knex migration configuration
-├── package.json                    # Node dependencies and scripts
-├── package-lock.json               # Dependency lock file
-├── ERD.txt                         # Entity Relationship Diagram
-├── fixes_report.txt                # Bug fixes documentation
-└── temp_register.json              # Temporary registration data
+10.1 NODE.JS DNS RESOLUTION LOOPBACK TRAP
+-----------------------------------------
+When spinning up integration tests locally (`npm test`) on host machines running Node.js v17+, the runner runtime prioritizes IPv6 loopback addresses (`::1`) over IPv4 addresses (`127.0.0.1`). 
 
-================================================================================
-8. KEY COMPONENTS
-================================================================================
+Because Docker container port definitions bind natively to IPv4, matching standard environment configurations to a generic `localhost` keyword string will break integration handshakes. 
 
-8.1 CONTROLLERS - Request Handling
------------------------------------
+Therefore, all local execution matrices must explicitly declare raw IPv4 loopback environments:
+```env
+REDIS_URL=redis://127.0.0.1:6379
 
-Role: HTTP request/response handling, input validation, service coordination
-
-Pattern:
-1. Extract data from request (body, params, query, session)
-2. Validate input data
-3. Call business logic service(s)
-4. Handle success/error responses
-5. Return appropriate HTTP status codes
-
-Example: createProject
-- Extract: req.body.name, req.body.description, req.user.id
-- Validate: name required and non-empty
-- Call: projectService.createProject(data, userId)
-- Handle: 201 on success, 400 on validation error
-- Return: JSON with created project or error message
-
-8.2 SERVICES - Business Logic
--------------------------------
-
-Role: Implement application business rules, orchestrate repositories
-
-Pattern:
-1. Receive validated input from controller
-2. Apply business logic and rules
-3. Coordinate multiple repository calls if needed
-4. Enforce invariants (e.g., transactions)
-5. Return domain objects
-
-Example: createUser
-- Hash password with bcryptjs
-- Start transaction
-- Insert user record
-- Link to requested roles
-- Fetch complete user object
-- Commit transaction
-- Return user (without password)
-
-Benefit: If business rules change (e.g., password policy), change in one place
-
-8.3 REPOSITORIES - Data Access
--------------------------------
-
-Role: Abstract database queries, provide domain-oriented interface
-
-Pattern:
-1. Accept domain objects/parameters
-2. Execute database queries
-3. Transform database results to domain objects
-4. Return results
-
-Example: getRolesForUser(userId)
-- Query: SELECT r.* FROM roles r 
-         INNER JOIN user_roles ur ON ur.role_id = r.id 
-         WHERE ur.user_id = ?
-- Transform: Convert rows to role objects
-- Return: Array of role objects
-
-Benefit: If schema changes, update in one place (not in services/controllers)
-
-8.4 MIDDLEWARE - Cross-Cutting Concerns
----------------------------------------
-
-Role: Handle concerns that apply to many requests
-
-Implemented:
-1. Authentication (Passport)
-   - Validates credentials
-   - Manages sessions
-   - Deserializes user
-
-2. Permission Checking (checkPerm)
-   - Verifies user authenticated
-   - Evaluates permissions via PDP
-   - Denies access if insufficient permissions
-
-3. Error Handling
-   - Catches unhandled errors
-   - Logs errors
-   - Returns safe error response
-
-8.5 REDIS CLIENT - Caching
----------------------------
-
-Purpose: Store and retrieve cached data across server instances
-
-Configuration:
-- Host: localhost (configurable via env)
-- Port: 6379 (standard Redis)
-- Graceful Fallback: If Redis unavailable, continue without cache
-
-Usage Pattern:
-1. Check cache: const data = await redisClient.get(key)
-2. Cache miss: Execute expensive operation
-3. Store result: await redisClient.setEx(key, ttl, value)
-4. On cache hit: Return cached value immediately
-
-Benefits:
-- Reduces database load
-- Improves response time (Redis ~1ms vs DB ~50ms)
-- Enables distributed caching across multiple servers
-- Easy cache invalidation with TTL
-
-================================================================================
-9. CONFIGURATION & SETUP
-================================================================================
-
-9.1 ENVIRONMENT VARIABLES
---------------------------
-
-Create .env file in BE/ directory:
-
-# Server Configuration
-PORT=5000
-NODE_ENV=development
-
-# Session Configuration (IMPORTANT: Change in production)
-SESSION_SECRET=your_secure_random_string_here
-# Generate strong secret: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-
-# Database Configuration (Knex)
-DB_CLIENT=sqlite3  # or mysql2, pg
-DB_FILENAME=dev.sqlite3  # for sqlite3
-DB_HOST=localhost  # for mysql2/pg
-DB_PORT=3306  # for mysql2/pg
-DB_USER=root  # for mysql2/pg
-DB_PASSWORD=your_password  # for mysql2/pg
-DB_DATABASE=telos_db  # for mysql2/pg
-
-# Redis Configuration (Session store and permission caching)
-# Option 1: REDIS_URL (recommended for cloud deployments)
-REDIS_URL=redis://[:password]@localhost:6379/0
-
-# Option 2: Separate configuration (for local development)
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=  # optional
-
-PRODUCTION ENVIRONMENT VARIABLES:
-- Set NODE_ENV=production for production deployments
-- Use strong SESSION_SECRET (minimum 32 characters, random)
-- Configure database to MySQL/PostgreSQL with credentials
-- Use managed Redis service (AWS ElastiCache, Redis Cloud, etc.)
-- Set REDIS_PASSWORD for Redis authentication
-- Verify all ports are accessible and firewalled appropriately
-
-See .env.example file for complete configuration template.
-
-9.2 DEPENDENCIES & INSTALLATION
---------------------------------
-
-Install dependencies:
-  npm install
-
-Install optional dev dependencies:
-  npm install --save-dev jest supertest nodemon
-
-9.3 DATABASE SETUP
-------------------
-
-Run migrations to create schema:
-  npm run migrations  # or: npx knex migrate:latest
-
-Seed initial permissions:
-  npm run seed  # or: npx knex seed:run
-
-Check migration status:
-  npx knex migrate:status
-
-9.4 RUNNING THE APPLICATION
-----------------------------
-
-Development (with auto-reload):
-  npm run dev
-
-Production (no auto-reload):
-  npm start
-
-Running tests:
-  npm test  # runs Jest with --runInBand flag
-
-9.5 REDIS SETUP (OPTIONAL)
----------------------------
-
-Redis is optional. If not available, caching gracefully degrades.
-
-To enable Redis:
-1. Install Redis server on your system
-2. Start Redis service
-3. Configure REDIS_HOST and REDIS_PORT in .env
-4. Application will automatically use Redis
-
-To test without Redis:
-- Leave REDIS_* env vars unset
-- Application will log warning and continue
-
-================================================================================
-10. TESTING
-================================================================================
-
-10.1 TEST FRAMEWORK
--------------------
-
-Framework: Jest 30.3.0
-HTTP Testing: Supertest 7.2.2
-Environment: Node.js with SQLite for tests
-
-Configuration (jest.config.js):
-- Test environment: node
-- Match pattern: **/*.test.js
-- Test timeout: 10000ms
-- Run tests sequentially: --runInBand flag
 
 10.2 TEST STRUCTURE
 -------------------
