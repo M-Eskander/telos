@@ -40,9 +40,16 @@ describe('Permission Attributes Repository', () => {
       expect(mockQuery.select).toHaveBeenCalledWith('permissions.action', 'permissions.resource', 'attributes.name');
 
       expect(result).toEqual({
-        'create:project': ['is_admin', 'is_owner'],
-        'read:project': ['is_viewer'],
-        'delete:task': ['is_admin']
+        'create:project': [
+          { name: 'is_admin', resource: 'project', resourceId: undefined },
+          { name: 'is_owner', resource: 'project', resourceId: undefined }
+        ],
+        'read:project': [
+          { name: 'is_viewer', resource: 'project', resourceId: undefined }
+        ],
+        'delete:task': [
+          { name: 'is_admin', resource: 'task', resourceId: undefined }
+        ]
       });
     });
 

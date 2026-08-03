@@ -13,8 +13,8 @@ describe('Role Attributes Repository', () => {
     test('should return attributes for existing role', async () => {
       const mockRole = { id: 1, name: 'admin' };
       const mockAttributes = [
-        { name: 'is_admin', description: 'Administrator access' },
-        { name: 'can_delete', description: 'Can delete resources' }
+        { name: 'is_admin', resource: 'global', resource_id: null },
+        { name: 'can_delete', resource: 'global', resource_id: null }
       ];
 
       const mockRoleQuery = {
@@ -43,7 +43,7 @@ describe('Role Attributes Repository', () => {
         'attributes.id'
       );
       expect(mockAttrQuery.where).toHaveBeenCalledWith({ role_id: 1 });
-      expect(mockAttrQuery.select).toHaveBeenCalledWith('attributes.name', 'attributes.description');
+      expect(mockAttrQuery.select).toHaveBeenCalledWith('attributes.name', 'attributes.resource', 'role_attributes.resource_id');
 
       expect(result).toEqual(mockAttributes);
     });

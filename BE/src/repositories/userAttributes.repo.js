@@ -5,7 +5,13 @@ async function getAttributesByUser(userId) {
     return knex('user_attributes')
         .join('attributes', 'user_attributes.attribute_id', 'attributes.id')
         .where({ user_id: userId })
-        .select('attributes.name', 'user_attributes.mode', 'user_attributes.value');
+        .select(
+            'attributes.name',
+            'attributes.resource',
+            'user_attributes.resource_id',
+            'user_attributes.mode',
+            'user_attributes.value'
+        );
 }
 
 async function insertOrUpdateAttributes(userId, attributes) {

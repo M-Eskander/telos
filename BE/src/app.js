@@ -1,7 +1,12 @@
-require('dotenv').config();
+// Load env only if an earlier bootstrap hasn't already loaded dotenv (tests)
+if (!process.env.__DOTENV_LOADED) {
+  require('dotenv').config();
+}
 const express = require('express');
 const session = require('express-session');
-const RedisStore = require('connect-redis').default;
+// `connect-redis` exports a `RedisStore` class under the `RedisStore` property.
+// Use that directly to construct the store instance.
+const RedisStore = require('connect-redis').RedisStore;
 const redisClient = require('./redis/client');
 const passport = require('./middleware/auth.middleware');
 const authRouter = require('./routes/authRouter');
@@ -30,6 +35,7 @@ const sessionConfig = {
 
 // Add Redis store if client is connected
 if (redisClient.isOpen || redisClient.isReady) {
+  console.log('DEBUG: RedisStore type:', typeof RedisStore, RedisStore && RedisStore.name);
   sessionConfig.store = new RedisStore({ client: redisClient });
   console.log('Session store: Redis');
 } else {

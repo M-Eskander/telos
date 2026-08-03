@@ -2,7 +2,14 @@
 process.env.REDIS_HOST = '127.0.0.1';
 process.env.REDIS_PORT = '6379';
 process.env.REDIS_URL = 'redis://127.0.0.1:6379';
-process.env.REDIS_PASSWORD = ''; // Clear the password for the test environment
+// By default tests clear the password to simulate an unauthenticated Redis.
+// However when running with a real Redis behind auth (USE_REAL_REDIS=true),
+// preserve or set the password instead of clearing it.
+if (process.env.USE_REAL_REDIS && process.env.USE_REAL_REDIS === 'true') {
+  process.env.REDIS_PASSWORD = process.env.REDIS_PASSWORD || 'password';
+} else {
+  process.env.REDIS_PASSWORD = '';
+}
 
 
 const request = require('supertest');
@@ -30,6 +37,15 @@ describe('Cache Invalidation Integration Tests', () => {
   beforeEach(async () => {
     jest.restoreAllMocks();
     pdpService._clearCache();
+
+    // Ensure Redis is connected so key cleanup succeeds reliably
+    if (!redisClient.isOpen && !redisClient.isReady) {
+      try {
+        await redisClient.connect();
+      } catch (err) {
+        // ignore connect failures here; subsequent ops will handle availability
+      }
+    }
 
     // Fallback global spy safeguards to capture unhandled cache misses and prevent SQLite missing table crashes
     jest.spyOn(permissionAttributesRepo, 'getAllPermissionRequirements').mockResolvedValue({});
@@ -65,6 +81,9 @@ describe('Cache Invalidation Integration Tests', () => {
       jest.spyOn(roleAttributesRepo, 'getAttributesByRole').mockResolvedValue([{ name: 'is_admin', resource: 'global' }]);
 
       const cacheKey = `user_permissions:${mockUserId}`;
+
+      // Ensure no stale cache present before first evaluation
+      try { await redisClient.del(cacheKey); } catch (e) {}
 
       let perms = await pdpService.getEffectivePermissions(mockUserId, [mockAdminRole]);
       expect(perms).toContain('project:delete');

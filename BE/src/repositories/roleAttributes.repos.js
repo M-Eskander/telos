@@ -7,7 +7,7 @@ async function getAttributesByRole(roleName) {
     return knex('role_attributes')
         .join('attributes', 'role_attributes.attribute_id', 'attributes.id')
         .where({ role_id: role.id })
-        .select('attributes.name', 'attributes.description');
+        .select('attributes.name', 'attributes.resource', 'role_attributes.resource_id');
 }
 
 async function insertOrUpdateAttributes(roleId, attributes) {

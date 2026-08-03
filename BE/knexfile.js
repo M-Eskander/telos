@@ -62,13 +62,16 @@ module.exports = {
 
   test: {
     client: 'sqlite3',
-    connection: ':memory:',
+    connection: {
+      filename: './test.sqlite3'
+    },
     useNullAsDefault: true,
     migrations: {
       directory: './src/db/migrations'
     },
     seeds: {
       directory: './src/db/seeds'
-    }  }
+    }
+  }
 
 };

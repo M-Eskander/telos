@@ -15,9 +15,11 @@ async function getAllPermissionRequirements() {
 
   const requirements = {};
   results.forEach(row => {
+    if (!row.name) return;
     const key = `${row.action}:${row.resource}`;
     if (!requirements[key]) requirements[key] = [];
-    requirements[key].push(row.name);
+    // Return attribute objects so callers (PDP) can inspect name/resource/resourceId
+    requirements[key].push({ name: row.name, resource: row.resource, resourceId: row.resource_id });
   });
   return requirements;
 }

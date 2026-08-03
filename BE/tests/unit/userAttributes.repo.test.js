@@ -12,8 +12,8 @@ describe('User Attributes Repository', () => {
   describe('getAttributesByUser', () => {
     test('should return joined attribute data with name and mode', async () => {
       const mockRows = [
-        { name: 'is_admin', mode: 'add', value: 'true' },
-        { name: 'is_owner', mode: 'remove', value: null }
+        { name: 'is_admin', resource: 'global', resource_id: null, mode: 'add', value: 'true' },
+        { name: 'is_owner', resource: 'project', resource_id: 1, mode: 'remove', value: null }
       ];
 
       const mockQuery = {
@@ -33,7 +33,13 @@ describe('User Attributes Repository', () => {
         'attributes.id'
       );
       expect(mockQuery.where).toHaveBeenCalledWith({ user_id: 1 });
-      expect(mockQuery.select).toHaveBeenCalledWith('attributes.name', 'user_attributes.mode', 'user_attributes.value');
+      expect(mockQuery.select).toHaveBeenCalledWith(
+        'attributes.name',
+        'attributes.resource',
+        'user_attributes.resource_id',
+        'user_attributes.mode',
+        'user_attributes.value'
+      );
       expect(result).toEqual(mockRows);
     });
 

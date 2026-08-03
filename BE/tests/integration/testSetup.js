@@ -1,14 +1,15 @@
+const fs = require('fs');
+const path = require('path');
 const knex = require('knex');
 const knexConfig = require('../../knexfile');
 
-// Use SQLite for testing instead of MySQL
-const testConfig = {
-  ...knexConfig.development,
-  connection: ':memory:',
-  client: 'sqlite3',
-  useNullAsDefault: true
-};
+const testDbFile = path.resolve(__dirname, '../../test.sqlite3');
+if (fs.existsSync(testDbFile)) {
+  fs.unlinkSync(testDbFile);
+}
 
+// Use the shared test database config so the app and tests operate on the same SQLite file.
+const testConfig = knexConfig.test;
 const testDb = knex(testConfig);
 
 beforeAll(async () => {
