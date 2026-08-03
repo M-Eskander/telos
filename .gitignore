@@ -1,1 +1,24 @@
 node_modules/
+.env
+# OS & editor
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+dist/
+coverage/
+
+# SQLite DB files used for development/tests
+BE/*.sqlite3
+BE/dev.sqlite3
+BE/test.sqlite3
+
+# Environment overrides
+.env.local
+.env.*.local
