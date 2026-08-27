@@ -12,10 +12,15 @@ const passport = require('./middleware/auth.middleware');
 const authRouter = require('./routes/authRouter');
 const projectRouter = require('./routes/projectRouter');
 const startServer = require('./utils/startServer');
-
+const createTokenBucketRateLimiter = require('./middleware/rateLimit.middleware');
 const app = express();
+const apiRateLimiter = createTokenBucketRateLimiter(['/api/'], {
+  capacity: 150,
+  refillRate: 4
+});
 
 // Middleware
+app.use(apiRateLimiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
