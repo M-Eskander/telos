@@ -5,8 +5,8 @@ const { checkPerm } = require('../middleware/auth.middleware');
 
 router.get('/', checkPerm('read:project'), projectController.listProjects);
 router.post('/', checkPerm('create:project'), projectController.createProject);
-router.get('/:id', checkPerm('read:project'), projectController.getProjectById);
-router.patch('/:id', checkPerm('update:project'), projectController.updateProject);
-router.delete('/:id', checkPerm('delete:project'), projectController.deleteProject);
+router.get('/:id', checkPerm('read:project', 'project'), projectController.getProjectById);
+router.patch('/:id', checkPerm('update:project', 'project'), projectController.updateProject);
+router.delete('/:id', checkPerm('delete:project', 'project'), projectController.deleteProject);
 
 module.exports = router;

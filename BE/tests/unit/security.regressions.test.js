@@ -34,7 +34,7 @@ describe('security regressions', () => {
   test('createUser ignores client-supplied privileged roles', async () => {
     userRepo.insertUser.mockResolvedValue({ id: 7, email: 'user@example.com' });
     userRepo.findById.mockResolvedValue({ id: 7, name: 'User', email: 'user@example.com', phone_number: '123' });
-    userRoleRepo.getRolesForUser.mockResolvedValue([{ name: 'user' }]);
+    userRoleRepo.getRolesForUser.mockResolvedValue(['user']);
     roleRepo.findOrCreate.mockImplementation(async (name) => ({ id: 99, name }));
 
     const created = await authService.createUser({
@@ -49,7 +49,7 @@ describe('security regressions', () => {
     expect(roleRepo.findOrCreate).toHaveBeenCalledWith('user', expect.anything());
     expect(userRoleRepo.linkUserRole).toHaveBeenCalledTimes(1);
     expect(userRoleRepo.linkUserRole).toHaveBeenCalledWith(7, 99, expect.anything());
-    expect(created.roles).toEqual([{ name: 'user' }]);
+    expect(created.roles).toEqual(['user']);
   });
 
   test('checkPerm normalizes legacy bare permission names to resource permissions', async () => {
