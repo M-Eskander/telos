@@ -8,6 +8,10 @@ const redisClient = require('../redis/client');
 let permissionRequirementsCache = null;
 let cacheExpiry = 0;
 
+function redisIsAvailable() {
+  return !!redisClient && (redisClient.isOpen === true || redisClient.isReady === true);
+}
+
 // For testing: function to clear cache
 const _clearCache = () => {
   permissionRequirementsCache = null;
@@ -42,7 +46,7 @@ function buildCompositeKey(name, resource, resourceId) {
  */
 async function invalidateAllPermissionCaches() {
   try {
-    if (!redisClient.isOpen && !redisClient.isReady) {
+    if (!redisIsAvailable()) {
       console.warn('Redis not available for cache invalidation');
       return 0;
     }
@@ -74,7 +78,7 @@ async function invalidateAllPermissionCaches() {
  */
 async function invalidateUserPermissionCache(userId) {
   try {
-    if (!redisClient.isOpen && !redisClient.isReady) {
+    if (!redisIsAvailable()) {
       return false;
     }
 
@@ -204,11 +208,11 @@ async function getEffectivePermissions(userId, roles, context) {
     console.log('PDP: activeAttributes:', Array.from(activeAttributes));
     console.log('PDP: effectivePermissions calculated:', effectivePermissions);
 
-// 6. Cache the result (Only cache if there's no unique resource instance context)
-
+// 6. Cache the result only when Redis is actually available
     try {
-        // Save to the key determined above (global or resource-scoped)
-        await redisClient.setEx(cacheKey, 300, JSON.stringify(effectivePermissions)); // 5 min TTL
+        if (redisIsAvailable()) {
+            await redisClient.setEx(cacheKey, 300, JSON.stringify(effectivePermissions)); // 5 min TTL
+        }
     } catch (err) {
         // Ignore cache errors
     }

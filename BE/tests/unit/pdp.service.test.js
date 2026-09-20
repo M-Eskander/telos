@@ -30,7 +30,10 @@ describe('PDP Service - getEffectivePermissions', () => {
       'read:task': [{ name: 'is_viewer', resource: 'task' }]
     });
 
-    // Mock Redis as unavailable for most tests
+    // Mock Redis as available for the cache-write scenario; tests that need
+    // unavailable Redis explicitly set these flags to false.
+    redisClient.isOpen = true;
+    redisClient.isReady = true;
     redisClient.get.mockResolvedValue(null);
     redisClient.setEx.mockResolvedValue('OK');
   });

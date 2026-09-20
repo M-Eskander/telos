@@ -102,7 +102,7 @@ describe('Auth Middleware - checkPerm', () => {
       await middleware(req, res, next);
 
       // 1. Verify project was extracted from DB correctly
-      expect(projectRepo.getProjectById).toHaveBeenCalledWith('5');
+      expect(projectRepo.getProjectById).toHaveBeenCalledWith('5', 1);
       
       // 2. Verify expected dynamic owner context was compiled and handed down to PDP service
       expect(pdpService.getEffectivePermissions).toHaveBeenCalledWith(
@@ -124,7 +124,7 @@ describe('Auth Middleware - checkPerm', () => {
       const middleware = checkPerm('delete:project', 'project');
       await middleware(req, res, next);
 
-      expect(projectRepo.getProjectById).toHaveBeenCalledWith('999');
+      expect(projectRepo.getProjectById).toHaveBeenCalledWith('999', 1);
       expect(res.status).toHaveBeenCalledWith(404);
       expect(res.json).toHaveBeenCalledWith({ ok: false, message: 'project not found' });
       expect(pdpService.getEffectivePermissions).not.toHaveBeenCalled();
@@ -143,7 +143,7 @@ describe('Auth Middleware - checkPerm', () => {
       const middleware = checkPerm('read:task', 'task', 'taskId');
       await middleware(req, res, next);
 
-      expect(taskRepo.findById).toHaveBeenCalledWith('42');
+      expect(taskRepo.findById).toHaveBeenCalledWith('42', 1);
       expect(pdpService.getEffectivePermissions).toHaveBeenCalledWith(
         1,
         ['admin'],

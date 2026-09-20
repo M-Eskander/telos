@@ -10,9 +10,9 @@ pdpService.getEffectivePermissions.mockImplementation(async (userId, roles, cont
   let perms = [];
 
   if (roleNames.includes('admin')) {
-    perms = ['read', 'create', 'update', 'delete'];
+    perms = ['read:project', 'create:project', 'update:project', 'delete:project'];
   } else if (roleNames.includes('viewer')) {
-    perms = ['read'];
+    perms = ['read:project'];
   }
 
   const removedAdminAttr = await testDb('user_attributes')
@@ -21,7 +21,7 @@ pdpService.getEffectivePermissions.mockImplementation(async (userId, roles, cont
     .first();
 
   if (removedAdminAttr) {
-    perms = perms.filter((p) => p !== 'create' && p !== 'update' && p !== 'delete');
+    perms = perms.filter((p) => p !== 'create:project' && p !== 'update:project' && p !== 'delete:project');
   }
 
   return perms;
