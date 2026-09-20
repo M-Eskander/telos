@@ -7,7 +7,7 @@ function clean(obj) {
 }
 
 async function getProjectByName(name) {
-    return knex('rojects').where({name}).first();
+    return knex('projects').where({name}).first();
 }
 
 async function getProjectById(id) {

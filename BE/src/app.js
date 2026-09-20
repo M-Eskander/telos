@@ -13,7 +13,10 @@ const authRouter = require('./routes/authRouter');
 const projectRouter = require('./routes/projectRouter');
 const startServer = require('./utils/startServer');
 const createTokenBucketRateLimiter = require('./middleware/rateLimit.middleware');
+const helmet = require('helmet');
+
 const app = express();
+app.use(helmet()); // Security headers
 const apiRateLimiter = createTokenBucketRateLimiter(['/api/'], {
   capacity: 150,
   refillRate: 4
