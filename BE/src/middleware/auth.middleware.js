@@ -52,13 +52,20 @@ passport.deserializeUser(async (id, done) => {
  * Registry mapping resource names to their real database lookups
  */
 const resourceResolvers = {
-  project: async (id) => {
-    return await projectRepo.getProjectById(id); 
+  project: async (id, userId = null) => {
+    return await projectRepo.getProjectById(id, userId);
   },
-  task: async (id) => {
-    return await taskRepo.findById(id);
+  task: async (id, userId = null) => {
+    return await taskRepo.findById(id, userId);
   }
 };
+
+function normalizePermission(permission, resourceType = null) {
+  if (!permission) return permission;
+  if (permission.includes(':')) return permission;
+  if (resourceType) return `${permission}:${resourceType}`;
+  return permission;
+}
 
 /**
  * Middleware to check if user has the required permission mapped to a real resource
@@ -72,6 +79,7 @@ function checkPerm(requiredPermission, resourceType = null, idParamName = 'id') 
 
       const userId = req.user.id;
       const roles = req.user.roles || [];
+      const normalizedPermission = normalizePermission(requiredPermission, resourceType);
       
       let context = null;
 
@@ -80,7 +88,7 @@ function checkPerm(requiredPermission, resourceType = null, idParamName = 'id') 
         const resolver = resourceResolvers[resourceType];
 
         if (resolver) {
-          const realResource = await resolver(resourceId);
+          const realResource = await resolver(resourceId, userId);
           
           if (!realResource) {
             return res.status(404).json({ ok: false, message: `${resourceType} not found` });
@@ -98,7 +106,7 @@ function checkPerm(requiredPermission, resourceType = null, idParamName = 'id') 
 
       const effectivePermissions = await pdpService.getEffectivePermissions(userId, roles, context);
 
-      if (!effectivePermissions.includes(requiredPermission)) {
+      if (!effectivePermissions.includes(normalizedPermission)) {
         return res.status(403).json({ ok: false, message: 'Insufficient permissions' });
       }
 

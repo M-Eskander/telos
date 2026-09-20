@@ -10,33 +10,53 @@ async function getProjectByName(name) {
     return knex('projects').where({name}).first();
 }
 
-async function getProjectById(id) {
-    return knex('projects').where({id}).first();
+// created_by: userId is incorrect because we need cross user access on projects
+async function getProjectById(id, userId = null) {
+    const query = knex('projects').where({ id });
+    if (userId) {
+      query.andWhere({ created_by: userId });
+    }
+    return query.first();
 }
 
 async function insertProject(name, description, created_by, trx) {
     const q = trx || knex;
-    await q('projects').insert({name, description, created_by});
-    return q('projects').where({name}).first();
+    const inserted = await q('projects').insert({ name, description, created_by });
+    const id = Array.isArray(inserted) ? inserted[0] : inserted;
+    return q('projects').where({ id }).first();
 }
 
-async function findOrCreate(name, description, trx) {
-    let p = await (trx || knex)('projects').where({name}).first();
-    if (!p) p = await insertProject(name, description, createdBy, trx);
+async function findOrCreate(name, description, created_by, trx) {
+    const q = trx || knex;
+    let p = await q('projects').where({ name }).first();
+    if (!p) p = await insertProject(name, description, created_by, q);
     return p;
 }
 
-async function listProjects() {
-    return knex('projects').select('*');
+//same problem as the created_by in getProjectById
+async function listProjects(userId = null) {
+    const query = knex('projects');
+    if (userId) {
+      query.where({ created_by: userId });
+    }
+    return query.select('*');
 }
 
-async function deleteProject(id) {
-    return knex('projects').where({id}).del();
+async function deleteProject(id, userId = null) {
+    const query = knex('projects').where({ id });
+    if (userId) {
+      query.andWhere({ created_by: userId });
+    }
+    return query.del();
 }
 
-async function updateProject(id, data) {
+async function updateProject(id, userId = null, data) {
   const cleanData = clean(data);
-  return knex('projects').where({ id }).update(cleanData);
+  const query = knex('projects').where({ id });
+  if (userId) {
+    query.andWhere({ created_by: userId });
+  }
+  return query.update(cleanData);
 }
 
 module.exports = { getProjectByName, getProjectById, insertProject, findOrCreate, listProjects, deleteProject, updateProject };

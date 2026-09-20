@@ -25,19 +25,35 @@ exports.me = (req, res) => {
 exports.register = async (req, res, next) => {
   try {
     const body = req.body || {};
-    const { name, phone_number, email, password, roles } = body;
+    const { name, phone_number, email, password } = body;
 
-    if (!name || !phone_number || !email || !password) 
+    if (!name || !phone_number || !email || !password)
       return res.status(400).json({ ok: false, message: 'Missing required fields' });
 
     const existing = await authService.findUserByEmail(email);
-    
+
     if (existing)
       return res.status(409).json({ ok: false, message: 'Email already registered' });
-    
-    const user = await authService.createUser({ name, phone_number, email, password, roles: roles || ['user'] });
-    
-    res.status(201).json({ ok: true, user: { id: user.id, name: user.name, email: user.email, phone_number: user.phone_number, created_at: user.created_at, roles: user.roles } });
+
+    const user = await authService.createUser({
+      name,
+      phone_number,
+      email,
+      password,
+      roles: ['user']
+    });
+
+    res.status(201).json({
+      ok: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone_number: user.phone_number,
+        created_at: user.created_at,
+        roles: user.roles
+      }
+    });
   } catch (err) {
     next(err);
   }
