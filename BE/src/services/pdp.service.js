@@ -152,7 +152,7 @@ async function getEffectivePermissions(userId, roles, context) {
 
    // 4. ATTRIBUTE RESOLUTION (RBAC + ABAC logic scoped by resource)
     // We store composite tokens: "attributeName:resourceName" (v1) or
-    // "attributeName:resourceName:resourceId" (v2, once repos return resource_id).
+    // "attributeName:resourceName:resourceId" (v2, once repos return resource_id). as we currently do
     const activeAttributes = new Set();
 
     // Add role-based attributes
@@ -189,6 +189,11 @@ async function getEffectivePermissions(userId, roles, context) {
     }
 
     // 5. PERMISSION FILTERING
+
+    //TODO smth is really wrong here, it should be taking user_id, resource type, resource_id, but it takes req.name
+    
+    
+    
     // Assumes allPermRequirements is structured like:
     // { "post:delete": [{ name: "is_owner", resource: "post" }, { name: "is_admin", resource: "global" }] }
     //
