@@ -1,5 +1,6 @@
 const request = require('supertest');
 const testDb = require('./testSetup');
+const knex = require('../../src/config/knex');
 const redisClient = require('../../src/redis/client');
 
 jest.mock('../../src/services/pdp.service');
@@ -30,6 +31,10 @@ pdpService.getEffectivePermissions.mockImplementation(async (userId, roles, cont
 const app = require('../../src/app');
 
 describe('Auth Flow Integration Tests', () => {
+  afterAll(async () => {
+    await knex.destroy();
+  });
+
   // NOTE: Integration tests skipped - requires test database setup
   // To run: Set up test database and uncomment this describe block
   let agent;
