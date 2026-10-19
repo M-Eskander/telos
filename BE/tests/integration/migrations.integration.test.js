@@ -84,5 +84,10 @@ describe('Database migration lifecycle', () => {
     expect(Number((await migrationDb('users').where({ id: ownerId }).first()).is_active))
       .toBe(1);
     expect(await migrationDb.schema.hasColumn('contracts', 'storage_key')).toBe(true);
+
+    const [, rolledBackMigrations] = await migrationDb.migrate.rollback(undefined, true);
+    expect(rolledBackMigrations.length).toBeGreaterThan(0);
+    expect(await migrationDb.schema.hasTable('permissions')).toBe(false);
+    expect(await migrationDb.schema.hasTable('users')).toBe(false);
   });
 });

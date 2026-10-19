@@ -32,6 +32,16 @@ exports.up = async function(knex) {
 };
 
 exports.down = async function(knex) {
+  if (!(await knex.schema.hasTable('permissions'))) {
+    return;
+  }
+
+  const hasAction = await knex.schema.hasColumn('permissions', 'action');
+  const hasResource = await knex.schema.hasColumn('permissions', 'resource');
+  if (!hasAction || !hasResource) {
+    return;
+  }
+
   await knex.schema.alterTable('permissions', (table) => {
     table.dropUnique(['action', 'resource']);
     table.dropColumn('resource');
