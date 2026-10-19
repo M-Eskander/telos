@@ -23,6 +23,7 @@
   "scripts": {
     "dev": "nodemon src/app.js --watch src",
     "start": "node src/app.js",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "test:coverage": "jest --runInBand --coverage"
   }
 }

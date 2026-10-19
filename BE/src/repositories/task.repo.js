@@ -7,6 +7,7 @@ async function findById(id) {
   task.assignees = await knex('task_assignment')
     .join('users', 'task_assignment.user_id', 'users.id')
     .where('task_assignment.task_id', id)
+    .where('users.is_active', true)
     .select('users.id', 'users.name', 'users.email');
 
   task.subtasks = await knex('tasks')
@@ -30,6 +31,7 @@ async function findByProject(projectId) {
     task.assignees = await knex('task_assignment')
       .join('users', 'task_assignment.user_id', 'users.id')
       .where('task_assignment.task_id', task.id)
+      .where('users.is_active', true)
       .select('users.id', 'users.name', 'users.email');
 
     task.subtasks = await knex('tasks')
@@ -40,6 +42,7 @@ async function findByProject(projectId) {
       subtask.assignees = await knex('task_assignment')
         .join('users', 'task_assignment.user_id', 'users.id')
         .where('task_assignment.task_id', subtask.id)
+        .where('users.is_active', true)
         .select('users.id', 'users.name', 'users.email');
     }
   }

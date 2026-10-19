@@ -1,9 +1,23 @@
 const projectService = require('../services/project.service');
+const pdpService = require('../services/pdp.service');
 
 exports.listProjects = async (req, res, next) => {
     try {
-        const projects = await projectService.listProjects(req.user.id);
-        res.json({ ok: true, projects });
+        const allProjects = await projectService.listProjects();
+        if (req.user.isOwner === true) {
+            return res.json({ ok: true, projects: allProjects });
+        }
+        const permissions = await Promise.all(allProjects.map(project =>
+            pdpService.getEffectivePermissions(req.user.id, req.user.roles || [], {
+                resourceId: project.id,
+                resourceType: 'project',
+                ownerId: project.created_by
+            })
+        ));
+        const projects = allProjects.filter((project, index) =>
+            permissions[index].includes('read:project')
+        );
+        return res.json({ ok: true, projects });
     } catch (err) {
         next(err);
     }
@@ -23,7 +37,7 @@ exports.createProject = async (req, res, next) => {
 exports.getProjectById = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const project = await projectService.getProjectById(id, req.user.id);
+        const project = await projectService.getProjectById(id);
         if (!project) return res.status(404).json({ ok: false, message: 'Project not found' });
         res.json({ ok: true, project });
     } catch (err) {
@@ -44,7 +58,7 @@ exports.updateProject = async (req, res, next) => {
       }
     }
 
-    const project = await projectService.updateProject(id, req.user.id, updateData);
+    const project = await projectService.updateProject(id, null, updateData);
     if (!project) return res.status(404).json({ ok: false, message: 'Project not found' });
 
     res.json({ ok: true, project });
@@ -56,7 +70,7 @@ exports.updateProject = async (req, res, next) => {
 exports.deleteProject = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const project = await projectService.deleteProject(id, req.user.id);
+        const project = await projectService.deleteProject(id);
         if (!project) return res.status(404).json({ ok: false, message: 'Project not found' });
         res.json({ ok: true, message: 'Project deleted successfully' });
     } catch (err) {

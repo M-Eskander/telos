@@ -26,13 +26,13 @@ async function insertOrUpdateAttributes(roleId, attributes) {
  * @param {object} trx - Optional Knex transaction
  * @returns {object} Created link record
  */
-async function linkRoleAttribute(roleId, attributeId, trx = null) {
+async function linkRoleAttribute(roleId, attributeId, trx = null, resourceId = null) {
     const db = trx || knex;
     
     try {
         // Check if already linked
         const existing = await db('role_attributes')
-            .where({ role_id: roleId, attribute_id: attributeId })
+            .where({ role_id: roleId, attribute_id: attributeId, resource_id: resourceId })
             .first();
 
         if (existing) {
@@ -41,7 +41,7 @@ async function linkRoleAttribute(roleId, attributeId, trx = null) {
 
         // Create link
         const result = await db('role_attributes')
-            .insert({ role_id: roleId, attribute_id: attributeId })
+            .insert({ role_id: roleId, attribute_id: attributeId, resource_id: resourceId, value: 'true' })
             .returning('*');
 
         // Invalidate all users with this role
@@ -61,12 +61,12 @@ async function linkRoleAttribute(roleId, attributeId, trx = null) {
  * @param {object} trx - Optional Knex transaction
  * @returns {boolean} True if removed, false if not found
  */
-async function removeRoleAttribute(roleId, attributeId, trx = null) {
+async function removeRoleAttribute(roleId, attributeId, trx = null, resourceId = null) {
     const db = trx || knex;
     
     try {
         const deleted = await db('role_attributes')
-            .where({ role_id: roleId, attribute_id: attributeId })
+            .where({ role_id: roleId, attribute_id: attributeId, resource_id: resourceId })
             .delete();
 
         if (deleted > 0) {
@@ -99,10 +99,11 @@ async function invalidateRolePermissionCache(roleId) {
             .select('user_id');
 
         // Invalidate cache for each user
-        const cacheKeys = users.map(u => `user_permissions:${u.user_id}`);
-        
+        const cacheKeys = (await Promise.all(users.map(user =>
+            redisClient.keys(`user_permissions:${user.user_id}*`)
+        ))).flat();
         if (cacheKeys.length > 0) {
-            const deleted = await redisClient.del(...cacheKeys);
+            const deleted = await redisClient.del(...new Set(cacheKeys));
             console.log(`Invalidated ${deleted} permission caches for role ${roleId}`);
         }
     } catch (err) {

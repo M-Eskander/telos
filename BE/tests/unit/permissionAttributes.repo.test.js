@@ -1,189 +1,114 @@
 const permissionAttributesRepo = require('../../src/repositories/permissionAttributes.repo');
 
-// Mock knex
 jest.mock('../../src/config/knex');
 const knex = require('../../src/config/knex');
-
-// Mock the getAttributesByPermission method
-jest.spyOn(permissionAttributesRepo, 'getAttributesByPermission');
 
 describe('Permission Attributes Repository', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    knex.transaction = jest.fn();
   });
 
-  describe('getAllPermissionRequirements', () => {
-    test('should return correct permission-to-attribute mapping', async () => {
-      const mockRows = [
-        { action: 'create', resource: 'project', name: 'is_admin' },
-        { action: 'create', resource: 'project', name: 'is_owner' },
-        { action: 'read', resource: 'project', name: 'is_viewer' },
-        { action: 'delete', resource: 'task', name: 'is_admin' }
-      ];
+  test('groups required attributes into alternative AND rules', async () => {
+    const query = {
+      join: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
+      select: jest.fn().mockResolvedValue([
+        { action: 'update', permission_resource: 'project', grant_group: 0, name: 'is_manager', attribute_resource: 'project' },
+        { action: 'update', permission_resource: 'project', grant_group: 0, name: 'is_active', attribute_resource: 'global' },
+        { action: 'update', permission_resource: 'project', grant_group: 1, name: 'is_owner', attribute_resource: 'global' }
+      ])
+    };
+    knex.mockReturnValue(query);
 
-      const mockQuery = {
-        join: jest.fn().mockReturnThis(),
-        join: jest.fn().mockReturnThis(),
-        select: jest.fn().mockResolvedValue(mockRows)
-      };
+    const result = await permissionAttributesRepo.getAllPermissionRequirements();
 
-      // Mock the chained joins
-      mockQuery.join.mockReturnValue(mockQuery);
-
-      knex.mockReturnValue(mockQuery);
-
-      const result = await permissionAttributesRepo.getAllPermissionRequirements();
-
-      expect(knex).toHaveBeenCalledWith('permissions');
-      expect(mockQuery.join).toHaveBeenCalledWith('permission_attributes', 'permissions.id', 'permission_attributes.permission_id');
-      expect(mockQuery.join).toHaveBeenCalledWith('attributes', 'permission_attributes.attribute_id', 'attributes.id');
-      expect(mockQuery.select).toHaveBeenCalledWith('permissions.action', 'permissions.resource', 'attributes.name');
-
-      expect(result).toEqual({
-        'create:project': [
-          { name: 'is_admin', resource: 'project', resourceId: undefined },
-          { name: 'is_owner', resource: 'project', resourceId: undefined }
+    expect(query.join).toHaveBeenCalledWith(
+      'permission_grant_groups',
+      'permissions.id',
+      'permission_grant_groups.permission_id'
+    );
+    expect(query.leftJoin).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      'update:project': [
+        [
+          { name: 'is_manager', resource: 'project' },
+          { name: 'is_active', resource: 'global' }
         ],
-        'read:project': [
-          { name: 'is_viewer', resource: 'project', resourceId: undefined }
-        ],
-        'delete:task': [
-          { name: 'is_admin', resource: 'task', resourceId: undefined }
-        ]
-      });
-    });
-
-    test('should handle permissions with no attributes', async () => {
-      const mockRows = [
-        { action: 'read', resource: 'public', name: null } // No attributes
-      ];
-
-      const mockQuery = {
-        join: jest.fn().mockReturnThis(),
-        join: jest.fn().mockReturnThis(),
-        select: jest.fn().mockResolvedValue([])
-      };
-
-      mockQuery.join.mockReturnValue(mockQuery);
-
-      knex.mockReturnValue(mockQuery);
-
-      const result = await permissionAttributesRepo.getAllPermissionRequirements();
-
-      expect(result).toEqual({});
-    });
-
-    test('should handle empty results', async () => {
-      const mockQuery = {
-        join: jest.fn().mockReturnThis(),
-        join: jest.fn().mockReturnThis(),
-        select: jest.fn().mockResolvedValue([])
-      };
-
-      mockQuery.join.mockReturnValue(mockQuery);
-
-      knex.mockReturnValue(mockQuery);
-
-      const result = await permissionAttributesRepo.getAllPermissionRequirements();
-
-      expect(result).toEqual({});
+        [{ name: 'is_owner', resource: 'global' }]
+      ]
     });
   });
 
-  describe('getAttributesByPermission', () => {
-    test('should return joined attribute data for permission', async () => {
-      const mockRows = [
-        { name: 'is_admin' },
-        { name: 'is_owner' }
-      ];
+  test('preserves an explicitly empty public grant group', async () => {
+    const query = {
+      join: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis(),
+      select: jest.fn().mockResolvedValue([
+        { action: 'read', permission_resource: 'public', grant_group: 0, name: null }
+      ])
+    };
+    knex.mockReturnValue(query);
 
-      const mockQuery = {
-        join: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        select: jest.fn().mockResolvedValue(mockRows)
-      };
-
-      knex.mockReturnValue(mockQuery);
-
-      const result = await permissionAttributesRepo.getAttributesByPermission(1);
-
-      expect(knex).toHaveBeenCalledWith('permission_attributes');
-      expect(mockQuery.join).toHaveBeenCalledWith(
-        'attributes',
-        'permission_attributes.attribute_id',
-        'attributes.id'
-      );
-      expect(mockQuery.where).toHaveBeenCalledWith({ permission_id: 1 });
-      expect(mockQuery.select).toHaveBeenCalledWith('attributes.name');
-
-      expect(result).toEqual(mockRows);
+    await expect(permissionAttributesRepo.getAllPermissionRequirements()).resolves.toEqual({
+      'read:public': [[]]
     });
   });
 
-  describe('insertOrUpdateAttributes', () => {
-    test('should delete existing and insert new attributes', async () => {
-      const mockDeleteQuery = {
-        where: jest.fn().mockReturnThis(),
-        delete: jest.fn().mockResolvedValue(1)
-      };
-
-      const mockInsertQuery = {
-        insert: jest.fn().mockResolvedValue([1, 2])
-      };
-
-      const mockAttrQuery = {
-        whereIn: jest.fn().mockReturnThis(),
-        select: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }])
-      };
-
-      const mockGetAttrQuery = {
-        join: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        select: jest.fn().mockResolvedValue([{ name: 'is_admin' }, { name: 'is_owner' }])
-      };
-
-      // Mock knex to return different query builders based on table name
-      knex.mockImplementation((table) => {
-        if (table === 'permission_attributes') {
-          const query = {
-            where: jest.fn().mockReturnThis(),
-            delete: jest.fn().mockResolvedValue(1),
-            insert: jest.fn().mockResolvedValue([1, 2]),
-            join: jest.fn().mockReturnThis(),
-            select: jest.fn().mockResolvedValue([])
-          };
-          return query;
-        } else if (table === 'attributes') {
-          return mockAttrQuery;
-        }
-        return {};
-      });
-
-      const result = await permissionAttributesRepo.insertOrUpdateAttributes(1, ['is_admin', 'is_owner']);
-
-      expect(knex).toHaveBeenCalledWith('permission_attributes');
-      expect(result).toBeDefined();
+  test('persists empty groups and their alternatives transactionally', async () => {
+    const query = {
+      whereIn: jest.fn().mockReturnThis(),
+      select: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+      join: jest.fn().mockReturnThis(),
+      leftJoin: jest.fn().mockReturnThis()
+    };
+    query.select.mockImplementation(() => {
+      if (knex.mock.calls[knex.mock.calls.length - 1][0] === 'attributes') {
+        return Promise.resolve([{ id: 1 }, { id: 2 }]);
+      }
+      return Promise.resolve([
+        { action: 'read', permission_resource: 'project', grant_group: 0, name: null },
+        { action: 'read', permission_resource: 'project', grant_group: 1, name: 'is_owner', attribute_resource: 'project' }
+      ]);
     });
+    const writes = [];
+    knex.transaction.mockImplementation(async callback => callback(tableName => ({
+      where: jest.fn().mockReturnThis(),
+      delete: jest.fn().mockResolvedValue(0),
+      insert: jest.fn(records => {
+        writes.push({ tableName, records });
+        return Promise.resolve([1]);
+      })
+    })));
+    knex.mockReturnValue(query);
 
-    test('should handle empty attribute list', async () => {
-      // Mock knex to return different query builders based on table name
-      knex.mockImplementation((table) => {
-        if (table === 'permission_attributes') {
-          const query = {
-            where: jest.fn().mockReturnThis(),
-            delete: jest.fn().mockResolvedValue(0),
-            join: jest.fn().mockReturnThis(),
-            select: jest.fn().mockResolvedValue([])
-          };
-          return query;
-        }
-        return {};
-      });
+    const result = await permissionAttributesRepo.replaceGrantGroups(4, [[], [1, 2]]);
 
-      const result = await permissionAttributesRepo.insertOrUpdateAttributes(1, []);
-
-      expect(knex).toHaveBeenCalledWith('permission_attributes');
-      expect(result).toBeDefined();
+    expect(writes).toContainEqual({
+      tableName: 'permission_grant_groups',
+      records: [{ permission_id: 4, grant_group: 0 }, { permission_id: 4, grant_group: 1 }]
     });
+    expect(writes).toContainEqual({
+      tableName: 'permission_attributes',
+      records: [
+        { permission_id: 4, attribute_id: 1, grant_group: 1 },
+        { permission_id: 4, attribute_id: 2, grant_group: 1 }
+      ]
+    });
+    expect(result['read:project']).toHaveLength(2);
+    expect(result['read:project'][0]).toEqual([]);
+  });
+
+  test('rejects grant groups containing unknown attributes before replacing existing grants', async () => {
+    const query = {
+      whereIn: jest.fn().mockReturnThis(),
+      select: jest.fn().mockResolvedValue([])
+    };
+    knex.mockReturnValue(query);
+
+    await expect(permissionAttributesRepo.replaceGrantGroups(4, [[999]])).rejects.toThrow(
+      'One or more permission grant attributes do not exist'
+    );
+    expect(knex.transaction).not.toHaveBeenCalled();
   });
 });

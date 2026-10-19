@@ -18,25 +18,17 @@ const _clearCache = () => {
   cacheExpiry = 0;
 };
 
-/**
- * Build the composite attribute key used for matching.
- *
- * v1 behavior (unchanged): resourceId is absent/undefined from the repos
- * today, so this always resolves to `${name}:${resource}` — a type/global
- * level key, exactly as before.
- *
- * Forward-looking (v2): once the repos start selecting `resource_id` from
- * role_attributes / user_attributes (added via migration
- * 20260803195906_add_resource_id_to_attribute_joins.js), a truthy
- * resourceId will produce an instance-scoped key instead:
- *   `${name}:${resource}:${resourceId}`
- * No caller changes are needed when that happens — this function is the
- * single place scope keys get built.
- */
 function buildCompositeKey(name, resource, resourceId) {
   return resourceId !== undefined && resourceId !== null
     ? `${name}:${resource}:${resourceId}`
     : `${name}:${resource}`;
+}
+
+function normalizeGrantGroups(requirements) {
+    if (!Array.isArray(requirements) || requirements.length === 0) {
+        return [[]];
+    }
+    return Array.isArray(requirements[0]) ? requirements : [requirements];
 }
 
 /**
@@ -83,7 +75,6 @@ async function invalidateUserPermissionCache(userId) {
     }
 
     const keys = await redisClient.keys(`user_permissions:${userId}*`);
-    console.log(`invalidateUserPermissionCache: found keys for user ${userId}:`, keys);
 
     if (keys.length === 0) {
       return false;
@@ -94,7 +85,6 @@ async function invalidateUserPermissionCache(userId) {
       deleted += await redisClient.del(key);
     }
 
-    console.log(`Cache invalidated: Cleared ${deleted} cache segments for user ${userId}`);
     return deleted > 0;
   } catch (err) {
     console.warn(`Failed to invalidate cache for user ${userId}: ${err.message}`);
@@ -140,26 +130,39 @@ async function getEffectivePermissions(userId, roles, context) {
 
     // 3. DATA GATHERING (The "Hot" IO phase)
     // We fetch everything in parallel to minimize latency
-    const roleNames = roles.map(r => typeof r === 'object' ? r.name : r);
-    const roleAttrsPromises = roleNames.map(roleName => roleAttributesRepo.getAttributesByRole(roleName));
+    const roleAssignments = roles.map(role => typeof role === 'object'
+        ? role
+        : { name: role });
+    const roleAttrsPromises = roleAssignments.map(role =>
+        roleAttributesRepo.getAttributesByRole(role.name)
+    );
     const [roleAttrsArrays, userAttrs] = await Promise.all([
         Promise.all(roleAttrsPromises),
         userAttributesRepo.getAttributesByUser(userId)
     ]);
 
-    // Merge role attributes
-    const roleAttrs = roleAttrsArrays.flat();
+    const roleAttrs = roleAttrsArrays.flatMap((attributes, index) => {
+        const assignment = roleAssignments[index];
+        if (!assignment.resourceType) return attributes;
+        if (!context || context.resourceType !== assignment.resourceType ||
+            String(context.resourceId) !== String(assignment.resourceId)) {
+            return [];
+        }
+        return attributes
+            .filter(attr => attr.resource === assignment.resourceType &&
+                (attr.resource_id === null || attr.resource_id === undefined ||
+                    String(attr.resource_id) === String(assignment.resourceId)))
+            .map(attr => ({ ...attr, resource_id: assignment.resourceId }));
+    });
 
    // 4. ATTRIBUTE RESOLUTION (RBAC + ABAC logic scoped by resource)
     // We store composite tokens: "attributeName:resourceName" (v1) or
     // "attributeName:resourceName:resourceId" (v2, once repos return resource_id). as we currently do
     const activeAttributes = new Set();
+    const removedAttributes = new Set();
 
     // Add role-based attributes
     for (const attr of roleAttrs) {
-        // attr.resource_id is undefined today (repos don't select it yet),
-        // so this is a no-op change for v1 — buildCompositeKey falls back
-        // to the plain "name:resource" key.
         activeAttributes.add(buildCompositeKey(attr.name, attr.resource, attr.resource_id));
     }
 
@@ -168,10 +171,6 @@ async function getEffectivePermissions(userId, roles, context) {
     if (context && context.ownerId === userId && context.resourceType) {
         activeAttributes.add(`is_owner:${context.resourceType}`);
 
-        // Forward-looking: also record an instance-scoped ownership token
-        // when we know which specific resource this is. Unused by any
-        // permission requirement today, so this is purely additive and
-        // does not change v1 matching behavior.
         if (context.resourceId !== undefined && context.resourceId !== null) {
             activeAttributes.add(`is_owner:${context.resourceType}:${context.resourceId}`);
         }
@@ -179,34 +178,37 @@ async function getEffectivePermissions(userId, roles, context) {
 
     // Overlay user-specific attribute overrides
     for (const ua of userAttrs) {
-        // Same v1/v2 note as role attributes above.
         const compositeKey = buildCompositeKey(ua.name, ua.resource, ua.resource_id);
         if (ua.mode === 'remove') {
+            removedAttributes.add(compositeKey);
             activeAttributes.delete(compositeKey);
         } else {
             activeAttributes.add(compositeKey);
+            removedAttributes.delete(compositeKey);
         }
     }
 
     // 5. PERMISSION FILTERING
 
-    //TODO smth is really wrong here, it should be taking user_id, resource type, resource_id, but it takes req.name
-    
-    
-    
-    // Assumes allPermRequirements is structured like:
-    // { "post:delete": [{ name: "is_owner", resource: "post" }, { name: "is_admin", resource: "global" }] }
-    //
-    // v1: requirements never carry a resourceId, so buildCompositeKey below
-    // always resolves to the plain "name:resource" key — identical to prior
-    // behavior. Once requirements can be instance-scoped, requiring
-    // req.resourceId will match against the finer-grained key automatically.
+    // Attributes in a grant group are ANDed; separate groups are alternatives.
     const effectivePermissions = Object.keys(allPermRequirements).filter(permName => {
-        const requiredAttrs = allPermRequirements[permName];
+        const grantGroups = normalizeGrantGroups(allPermRequirements[permName]);
+        return grantGroups.some(requiredAttrs =>
+            requiredAttrs.every(req => {
+                const contextResourceId = context && context.resourceType === req.resource
+                    ? context.resourceId
+                    : undefined;
+                const resourceId = req.resourceId !== undefined && req.resourceId !== null
+                    ? req.resourceId
+                    : contextResourceId;
+                const scopedKey = buildCompositeKey(req.name, req.resource, resourceId);
+                const typeKey = buildCompositeKey(req.name, req.resource);
 
-        // Logical AND: User must have EVERY (name + resource[+ resourceId]) combo required by the permission
-        return requiredAttrs.every(req =>
-            activeAttributes.has(buildCompositeKey(req.name, req.resource, req.resourceId))
+                if (removedAttributes.has(scopedKey) || removedAttributes.has(typeKey)) {
+                    return false;
+                }
+                return activeAttributes.has(scopedKey) || activeAttributes.has(typeKey);
+            })
         );
     });
 
@@ -231,6 +233,7 @@ module.exports = {
     getEffectivePermissions,
     invalidateUserPermissionCache,
     invalidateAllPermissionCaches,
+    clearPermissionRequirementCache: _clearCache,
     _clearCache,
     // exported for unit testing the key-building rule in isolation
     _buildCompositeKey: buildCompositeKey

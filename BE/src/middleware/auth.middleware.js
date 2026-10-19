@@ -12,7 +12,7 @@ passport.use(
     async (email, password, done) => {
       try {
         const user = await authService.findUserByEmail(email);
-        if (!user) {
+        if (!user || user.is_active === false || Number(user.is_active) === 0) {
           return done(null, false, { message: 'Invalid email or password' });
         }
 
@@ -22,7 +22,8 @@ passport.use(
         }
 
         delete user.password;
-        user.roles = user.roles || (await authService.getUserRoles(user.id));
+        user.roles = user.roles || (await authService.getUserRoleAssignments(user.id));
+        user.isOwner = await authService.isOwner(user.id);
         return done(null, user);
       } catch (err) {
         return done(err);
@@ -38,9 +39,10 @@ passport.serializeUser((user, done) => {
 passport.deserializeUser(async (id, done) => {
   try {
     const user = await authService.findUserById(id);
-    if (!user) return done(null, false);
+    if (!user || user.is_active === false || Number(user.is_active) === 0) return done(null, false);
 
-    user.roles = await authService.getUserRoles(id);
+    user.roles = await authService.getUserRoleAssignments(id);
+    user.isOwner = await authService.isOwner(id);
     delete user.password;
     done(null, user);
   } catch (err) {
@@ -53,7 +55,7 @@ passport.deserializeUser(async (id, done) => {
  */
 const resourceResolvers = {
   project: async (id, userId = null) => {
-    return await projectRepo.getProjectById(id, userId);
+    return await projectRepo.getProjectById(id);
   },
   task: async (id, userId = null) => {
     return await taskRepo.findById(id, userId);
@@ -79,6 +81,7 @@ function checkPerm(requiredPermission, resourceType = null, idParamName = 'id') 
 
       const userId = req.user.id;
       const roles = req.user.roles || [];
+      if (req.user.isOwner === true) return next();
       const normalizedPermission = normalizePermission(requiredPermission, resourceType);
       
       let context = null;
@@ -118,5 +121,24 @@ function checkPerm(requiredPermission, resourceType = null, idParamName = 'id') 
   };
 }
 
+function requireAuthenticated(req, res, next) {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.status(401).json({ ok: false, message: 'Authentication required' });
+  }
+  next();
+}
+
+function requireOwner(req, res, next) {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.status(401).json({ ok: false, message: 'Authentication required' });
+  }
+  if (req.user.isOwner !== true) {
+    return res.status(403).json({ ok: false, message: 'Owner access required' });
+  }
+  next();
+}
+
 module.exports = passport;
 module.exports.checkPerm = checkPerm;
+module.exports.requireAuthenticated = requireAuthenticated;
+module.exports.requireOwner = requireOwner;

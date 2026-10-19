@@ -11,6 +11,7 @@ const redisClient = require('./redis/client');
 const passport = require('./middleware/auth.middleware');
 const authRouter = require('./routes/auth.router');
 const projectRouter = require('./routes/project.router');
+const accessControlRouter = require('./routes/accessControl.router');
 const startServer = require('./utils/startServer');
 const createTokenBucketRateLimiter = require('./middleware/rateLimit.middleware');
 const helmet = require('helmet');
@@ -58,6 +59,7 @@ app.use(passport.session());
 // mount auth router under API base
 app.use('/api/auth', authRouter);
 app.use('/api/projects', projectRouter);
+app.use('/api/admin', accessControlRouter);
 // Environment variables
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || 'development';

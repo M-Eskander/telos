@@ -31,7 +31,7 @@ async function insertOrUpdateAttributes(userId, attributes) {
  * @param {object} trx - Optional Knex transaction
  * @returns {object} Created/updated user attribute record
  */
-async function addUserAttribute(userId, attributeName, mode = 'add', trx = null) {
+async function addUserAttribute(userId, attributeName, mode = 'add', trx = null, resourceId = null) {
     const db = trx || knex;
     
     try {
@@ -46,7 +46,7 @@ async function addUserAttribute(userId, attributeName, mode = 'add', trx = null)
 
         // Insert or update user attribute
         const existing = await db('user_attributes')
-            .where({ user_id: userId, attribute_id: attribute.id })
+            .where({ user_id: userId, attribute_id: attribute.id, resource_id: resourceId })
             .first();
 
         let result;
@@ -60,6 +60,8 @@ async function addUserAttribute(userId, attributeName, mode = 'add', trx = null)
                 .insert({
                     user_id: userId,
                     attribute_id: attribute.id,
+                    resource_id: resourceId,
+                    value: 'true',
                     mode,
                     created_at: new Date()
                 })
@@ -83,7 +85,7 @@ async function addUserAttribute(userId, attributeName, mode = 'add', trx = null)
  * @param {object} trx - Optional Knex transaction
  * @returns {boolean} True if removed, false if not found
  */
-async function removeUserAttribute(userId, attributeName, trx = null) {
+async function removeUserAttribute(userId, attributeName, trx = null, resourceId = null) {
     const db = trx || knex;
     
     try {
@@ -98,7 +100,7 @@ async function removeUserAttribute(userId, attributeName, trx = null) {
 
         // Delete user attribute
         const deleted = await db('user_attributes')
-            .where({ user_id: userId, attribute_id: attribute.id })
+            .where({ user_id: userId, attribute_id: attribute.id, resource_id: resourceId })
             .delete();
 
         if (deleted > 0) {
@@ -120,14 +122,10 @@ async function removeUserAttribute(userId, attributeName, trx = null) {
  * @returns {Promise<void>}
  */
 async function invalidateUserPermissionCache(userId) {
-    const cacheKey = `user_permissions:${userId}`;
-    
     try {
         if (redisClient.isOpen || redisClient.isReady) {
-            const deleted = await redisClient.del(cacheKey);
-            if (deleted > 0) {
-                console.log(`Cache invalidated: ${cacheKey}`);
-            }
+            const keys = await redisClient.keys(`user_permissions:${userId}*`);
+            if (keys.length) await redisClient.del(...keys);
         }
     } catch (err) {
         // Log but don't fail if Redis unavailable
@@ -151,9 +149,10 @@ async function invalidateRolePermissionCache(roleId) {
             .where({ role_id: roleId })
             .select('user_id');
 
-        // Invalidate cache for each user
-        const invalidations = users.map(u => invalidateUserPermissionCache(u.user_id));
-        await Promise.all(invalidations);
+        const keys = (await Promise.all(users.map(user =>
+            redisClient.keys(`user_permissions:${user.user_id}*`)
+        ))).flat();
+        if (keys.length) await redisClient.del(...new Set(keys));
         
         console.log(`Invalidated caches for ${users.length} users (role ${roleId})`);
     } catch (err) {

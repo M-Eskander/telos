@@ -11,19 +11,29 @@ function createDatabase(seed = {}) {
   const database = {
     tasks: (seed.tasks || []).map(task => ({ ...task })),
     task_assignment: (seed.task_assignment || []).map(assignment => ({ ...assignment })),
-    projects: (seed.projects || []).map(project => ({ ...project }))
+    projects: (seed.projects || []).map(project => ({ ...project })),
+    users: (seed.users || [2, 3, 4, 5, 7, 9].map(id => ({ id, is_active: true })))
+      .map(user => ({ ...user }))
   };
   const queryCalls = [];
 
   const trx = jest.fn(tableName => {
     const filters = [];
     const rows = () => (database[tableName] || []).filter(row =>
-      filters.every(([key, value]) => row[key] === value)
+      filters.every(([key, value]) => key.startsWith('whereIn:')
+        ? value.includes(row[key.slice('whereIn:'.length)])
+        : row[key] === value)
     );
+    const addConditions = (condition, value) => {
+      const conditions = typeof condition === 'string' ? { [condition]: value } : condition;
+      Object.entries(conditions).forEach(entry => filters.push(entry));
+      return query;
+    };
     const query = {
-      where: (key, value) => {
-        const condition = typeof key === 'string' ? { [key]: value } : key;
-        Object.entries(condition).forEach(entry => filters.push(entry));
+      where: addConditions,
+      andWhere: addConditions,
+      whereIn: (key, values) => {
+        filters.push([`whereIn:${key}`, values]);
         return query;
       },
       first: async () => {
@@ -171,6 +181,33 @@ describe('Task Service Unit Tests', () => {
 
       expect(database.tasks.find(task => task.id === 1).progress).toBe(75);
       expect(database.projects[0].progress).toBe(75);
+    });
+
+    test('rejects archived or missing people as task assignees', async () => {
+      const { database } = useTransaction({
+        projects: [{ id: 6, progress: 0 }],
+        users: [{ id: 8, is_active: false }]
+      });
+
+      await expect(taskService.createTask(6, 9, {
+        title: 'Task for archived person',
+        assignee_ids: [8]
+      })).rejects.toMatchObject({ code: 'INVALID_ASSIGNEES' });
+      expect(database.tasks).toEqual([]);
+      expect(database.task_assignment).toEqual([]);
+    });
+
+    test('rejects a parent task from another project', async () => {
+      const { database } = useTransaction({
+        tasks: [{ id: 10, project_id: 99, parent_task_id: null, progress: 0, weight: 1 }],
+        projects: [{ id: 6, progress: 0 }]
+      });
+
+      await expect(taskService.createTask(6, 9, {
+        title: 'Cross-project child',
+        parent_task_id: 10
+      })).rejects.toMatchObject({ code: 'INVALID_PARENT_TASK' });
+      expect(database.tasks).toHaveLength(1);
     });
   });
 

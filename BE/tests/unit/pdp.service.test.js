@@ -120,6 +120,112 @@ describe('PDP Service - getEffectivePermissions', () => {
 
       expect(permissions).toContain('read:public');
     });
+
+    test('should grant a permission when any complete alternative rule matches', async () => {
+      permissionAttributesRepo.getAllPermissionRequirements.mockResolvedValue({
+        'update:project': [
+          [
+            { name: 'is_project_manager', resource: 'project' },
+            { name: 'is_active_member', resource: 'global' }
+          ],
+          [{ name: 'is_owner', resource: 'project' }]
+        ]
+      });
+      roleAttributesRepo.getAttributesByRole.mockResolvedValue([
+        { name: 'is_owner', resource: 'project' }
+      ]);
+      userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
+
+      const permissions = await getEffectivePermissions(1, ['owner']);
+
+      expect(permissions).toContain('update:project');
+    });
+
+    test('should grant a permission when every attribute in one alternative rule matches', async () => {
+      permissionAttributesRepo.getAllPermissionRequirements.mockResolvedValue({
+        'update:project': [
+          [
+            { name: 'is_project_manager', resource: 'project' },
+            { name: 'is_active_member', resource: 'global' }
+          ],
+          [{ name: 'is_owner', resource: 'project' }]
+        ]
+      });
+      roleAttributesRepo.getAttributesByRole.mockResolvedValue([
+        { name: 'is_project_manager', resource: 'project' },
+        { name: 'is_active_member', resource: 'global' }
+      ]);
+      userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
+
+      const permissions = await getEffectivePermissions(1, ['project-manager']);
+
+      expect(permissions).toContain('update:project');
+    });
+
+    test('should not grant a permission when only part of every alternative rule matches', async () => {
+      permissionAttributesRepo.getAllPermissionRequirements.mockResolvedValue({
+        'update:project': [
+          [
+            { name: 'is_project_manager', resource: 'project' },
+            { name: 'is_active_member', resource: 'global' }
+          ],
+          [{ name: 'is_owner', resource: 'project' }]
+        ]
+      });
+      roleAttributesRepo.getAttributesByRole.mockResolvedValue([
+        { name: 'is_project_manager', resource: 'project' }
+      ]);
+      userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
+
+      const permissions = await getEffectivePermissions(1, ['project-manager']);
+
+      expect(permissions).not.toContain('update:project');
+    });
+
+    test('should allow an instance-scoped user attribute only for its resource', async () => {
+      permissionAttributesRepo.getAllPermissionRequirements.mockResolvedValue({
+        'read:project': [[{ name: 'is_project_member', resource: 'project' }]]
+      });
+      roleAttributesRepo.getAttributesByRole.mockResolvedValue([]);
+      userAttributesRepo.getAttributesByUser.mockResolvedValue([
+        { name: 'is_project_member', resource: 'project', resource_id: 42, mode: 'add' }
+      ]);
+
+      const matchingProjectPermissions = await getEffectivePermissions(1, [], {
+        resourceType: 'project',
+        resourceId: 42
+      });
+      _clearCache();
+      redisClient.get.mockResolvedValue(null);
+      const otherProjectPermissions = await getEffectivePermissions(1, [], {
+        resourceType: 'project',
+        resourceId: 43
+      });
+
+      expect(matchingProjectPermissions).toContain('read:project');
+      expect(otherProjectPermissions).not.toContain('read:project');
+    });
+
+    test('should let a user-level removal override matching role grants', async () => {
+      permissionAttributesRepo.getAllPermissionRequirements.mockResolvedValue({
+        'delete:project': [
+          [{ name: 'is_project_manager', resource: 'project' }],
+          [{ name: 'is_owner', resource: 'project' }]
+        ]
+      });
+      roleAttributesRepo.getAttributesByRole.mockResolvedValue([
+        { name: 'is_project_manager', resource: 'project' },
+        { name: 'is_owner', resource: 'project' }
+      ]);
+      userAttributesRepo.getAttributesByUser.mockResolvedValue([
+        { name: 'is_project_manager', resource: 'project', mode: 'remove' },
+        { name: 'is_owner', resource: 'project', mode: 'remove' }
+      ]);
+
+      const permissions = await getEffectivePermissions(1, ['project-manager', 'owner']);
+
+      expect(permissions).not.toContain('delete:project');
+    });
   });
 
   describe('Caching', () => {

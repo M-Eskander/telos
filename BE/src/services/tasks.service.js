@@ -1,7 +1,46 @@
 const taskRepo = require('../repositories/task.repo');
 const knex = require('../config/knex');
+
+async function getActiveAssigneeIds(trx, assigneeIds) {
+  if (!Array.isArray(assigneeIds)) {
+    const error = new TypeError('assignee_ids must be an array');
+    error.code = 'INVALID_ASSIGNEES';
+    throw error;
+  }
+  const ids = assigneeIds.map(Number);
+  if (ids.some(id => !Number.isInteger(id) || id < 1) || new Set(ids).size !== ids.length) {
+    const error = new TypeError('assignee_ids must contain unique positive user IDs');
+    error.code = 'INVALID_ASSIGNEES';
+    throw error;
+  }
+  if (ids.length === 0) return ids;
+  const activeUsers = await trx('users')
+    .whereIn('id', ids)
+    .andWhere({ is_active: true })
+    .select('id');
+  if (activeUsers.length !== ids.length) {
+    const error = new Error('Every assignee must be an active person');
+    error.code = 'INVALID_ASSIGNEES';
+    throw error;
+  }
+  return ids;
+}
+
 async function createTask(projectId, userId, data) {
   const task = await knex.transaction(async trx => {
+    if (data.parent_task_id) {
+      const parentTask = await trx('tasks')
+        .where({ id: data.parent_task_id, project_id: projectId })
+        .first();
+      if (!parentTask) {
+        const error = new Error('Parent task must belong to this project');
+        error.code = 'INVALID_PARENT_TASK';
+        throw error;
+      }
+    }
+    const assigneeIds = data.assignee_ids === undefined
+      ? []
+      : await getActiveAssigneeIds(trx, data.assignee_ids);
     const taskData = {
       project_id: projectId,
       title: data.title,
@@ -19,8 +58,8 @@ async function createTask(projectId, userId, data) {
     const [id] = await trx('tasks').insert(taskData);
     const newTask = await trx('tasks').where({ id }).first();
 
-    if (data.assignee_ids && data.assignee_ids.length > 0) {
-      const records = data.assignee_ids.map(uid => ({ task_id: id, user_id: uid }));
+    if (assigneeIds.length > 0) {
+      const records = assigneeIds.map(uid => ({ task_id: id, user_id: uid }));
       await trx('task_assignment').insert(records);
     }
 
@@ -41,10 +80,17 @@ async function getProjectTasks(projectId) {
   return await taskRepo.findByProject(projectId);
 }
 
-async function updateTask(id, data) {
+async function updateTask(id, data, projectId = null) {
   const updatedTask = await knex.transaction(async trx => {
-    const task = await trx('tasks').where({ id }).first();
-    if (!task) throw new Error('Task not found');
+    const taskQuery = trx('tasks').where({ id });
+    if (projectId !== null && projectId !== undefined) taskQuery.andWhere({ project_id: projectId });
+    const task = await taskQuery.first();
+    if (!task) {
+      if (projectId === null || projectId === undefined) {
+        throw new Error('Task not found');
+      }
+      return null;
+    }
 
     const allowedUpdates = {
       title: data.title,
@@ -65,10 +111,11 @@ async function updateTask(id, data) {
       await trx('tasks').where({ id }).update(allowedUpdates);
     }
 
-    if (data.assignee_ids) {
+    if (data.assignee_ids !== undefined) {
+      const assigneeIds = await getActiveAssigneeIds(trx, data.assignee_ids);
       await trx('task_assignment').where({ task_id: id }).del();
-      if (data.assignee_ids.length > 0) {
-        const records = data.assignee_ids.map(uid => ({ task_id: id, user_id: uid }));
+      if (assigneeIds.length > 0) {
+        const records = assigneeIds.map(uid => ({ task_id: id, user_id: uid }));
         await trx('task_assignment').insert(records);
       }
     }
@@ -83,10 +130,12 @@ async function updateTask(id, data) {
     return trx('tasks').where({ id }).first();
   });
 
+  if (!updatedTask) return null;
   return taskRepo.findById(updatedTask.id);
 }
-async function deleteTask(id) {
-  return await taskRepo.remove(id);
+async function deleteTask(id, projectId = null) {
+  if (projectId === null || projectId === undefined) return taskRepo.remove(id);
+  return knex('tasks').where({ id, project_id: projectId }).del();
 }
 
 // Helper to recalculate and update parent task progress based on its subtasks

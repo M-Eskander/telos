@@ -13,7 +13,8 @@ async function getProjectById(id, userId = null) {
 }
 
 async function updateProject(id, userId = null, data) {
-    return projectRepo.updateProject(id, userId, data);
+    const updated = await projectRepo.updateProject(id, userId, data);
+    return updated ? projectRepo.getProjectById(id) : null;
 }
 
 async function deleteProject(id, userId = null) {

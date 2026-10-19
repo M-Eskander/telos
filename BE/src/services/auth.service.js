@@ -15,12 +15,84 @@ async function findUserById(id, trx) {
 }
 
 async function verifyPassword(plain, hash) {
-  if (!hash) return plain === hash;
+  if (typeof plain !== 'string' || !plain || typeof hash !== 'string' || !hash) return false;
   return bcrypt.compare(plain, hash);
 }
 
 async function getUserRoles(userId, trx) {
   return userRoleRepo.getRolesForUser(userId, trx);
+}
+
+async function getUserRoleAssignments(userId, trx) {
+  return userRoleRepo.getRoleAssignmentsForUser(userId, trx);
+}
+
+async function isOwner(userId, trx) {
+  const q = trx || knex;
+  const owner = await q('owner_account').where({ id: 1, user_id: userId }).first();
+  return !!owner;
+}
+
+async function bootstrapOwner({ name, phone_number, email, password }) {
+  const hashed = await bcrypt.hash(password, 10);
+  try {
+    return await knex.transaction(async trx => {
+      const ownerExists = await trx('owner_account').where({ id: 1 }).first();
+      if (ownerExists) {
+        const error = new Error('The owner account has already been created');
+        error.code = 'OWNER_ALREADY_BOOTSTRAPPED';
+        throw error;
+      }
+
+      const [userId] = await trx('users').insert({
+        name,
+        phone_number,
+        email,
+        password: hashed,
+        created_at: new Date()
+      });
+      let ownerRole = await trx('roles').where({ name: 'owner' }).first();
+      if (!ownerRole) {
+        const [roleId] = await trx('roles').insert({ name: 'owner' });
+        ownerRole = await trx('roles').where({ id: roleId }).first();
+      }
+      await trx('user_roles').insert({ user_id: userId, role_id: ownerRole.id });
+
+      let ownerAttribute = await trx('attributes')
+        .where({ name: 'is_owner', resource: 'global' })
+        .first();
+      if (!ownerAttribute) {
+        const [attributeId] = await trx('attributes').insert({
+          name: 'is_owner',
+          resource: 'global',
+          description: 'Studio owner'
+        });
+        ownerAttribute = await trx('attributes').where({ id: attributeId }).first();
+      }
+      await trx('role_attributes').insert({
+        role_id: ownerRole.id,
+        attribute_id: ownerAttribute.id,
+        resource_id: null,
+        value: 'true'
+      }).onConflict(['role_id', 'attribute_id', 'resource_id']).ignore();
+
+      await trx('owner_account').insert({ id: 1, user_id: userId, created_at: new Date() });
+      const owner = await userRepo.findById(userId, trx);
+      owner.roles = ['owner'];
+      owner.isOwner = true;
+      delete owner.password;
+      return owner;
+    });
+  } catch (error) {
+    if (error.code === 'OWNER_ALREADY_BOOTSTRAPPED' ||
+        (typeof error.code === 'string' && error.code.startsWith('SQLITE_CONSTRAINT')) ||
+        error.code === 'ER_DUP_ENTRY') {
+      const conflict = new Error('The owner account has already been created or the email is already in use');
+      conflict.code = 'OWNER_ALREADY_BOOTSTRAPPED';
+      throw conflict;
+    }
+    throw error;
+  }
 }
 
 async function createUser({ name, phone_number, email, password, roles = ['user'] }) {
@@ -53,5 +125,8 @@ module.exports = {
   findUserById,
   verifyPassword,
   getUserRoles,
-  createUser
+  getUserRoleAssignments,
+  createUser,
+  isOwner,
+  bootstrapOwner
 };
