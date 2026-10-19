@@ -19,16 +19,63 @@ Create the one-time owner with `POST /api/auth/bootstrap-owner`:
 The endpoint succeeds only once. After it succeeds, remove
 `OWNER_SETUP_SECRET` from the deployment environment and sign in through
 `POST /api/auth/login`. Public registration is disabled; the owner creates
-people through the authenticated `/api/admin/people` endpoint.
+people through the authenticated `/api/admin/people` endpoint. Creating a
+person requires a contract PDF upload and its contract dates in the same
+multipart request, so the account and its first contract are created together.
+
+Send `POST /api/admin/people` as `multipart/form-data` with the regular person
+fields, `contract_start_date`, `contract_end_date`, optional `contract_terms`,
+optional JSON-encoded `roles`, and one `contract` PDF (maximum 10 MB). The
+contract start date is the person's start date. Dates must be valid
+`YYYY-MM-DD` values and the end date cannot precede the start date.
+
+Contract PDFs are stored outside the public web root in
+`CONTRACT_STORAGE_DIR` (default: `BE/storage/contracts`). Configure this path
+to a durable, access-controlled volume and back it up; the database stores
+contract metadata and an opaque file key. The owner can retrieve a file through
+the `file_url` returned with each contract. `GET /api/admin/people/:userId`
+returns the person's contract history, and
+`POST /api/admin/people/:userId/contracts` uploads an additional contract or
+supplies a missing one for an archived person. That upload uses multipart
+fields `contract_start_date`, `contract_end_date`, optional `contract_terms`,
+and `contract`.
+
+Existing non-owner people without a valid uploaded contract are archived by
+the contract migration. They cannot sign in or be reactivated until a contract
+with both dates is uploaded. Archiving an account disables its existing
+sessions on their next request; its contract and project/task history remain
+intact. The owner account is exempt from the contract requirement and cannot be
+archived.
 
 All `/api/admin` endpoints require the bootstrapped owner account. The owner
 can create people, roles, attributes, and permissions, then assign role
 attributes, person-specific attributes, and permission grants. Attribute
 assignments may be scoped to a project by supplying its `resourceId`.
 
+Project departments and project membership are managed on the project routes.
+Use `GET/POST /api/projects/:projectId/departments` to list or create a
+project-specific department. Use
+`DELETE /api/projects/:projectId/departments/:departmentId` to remove one.
+Department names may be reused in different projects.
+
+Use `GET /api/projects/:projectId/members` to list active members and
+`PUT /api/projects/:projectId/members/:userId` with
+`{ "departmentId": 4 }` to assign or move an active person. Set
+`departmentId` to `null` (or omit it) for a project member with no department.
+`DELETE /api/projects/:projectId/members/:userId` removes the project
+membership. A department can only be assigned within its own project, and
+task assignees must be active members of that project.
+
+`GET /api/projects/:projectId/timeline` returns the project's tasks and
+subtasks that have either a start date or an end date, ordered by the first
+available date. Each task includes its `parent_task_id` and active assignees;
+undated tasks and tasks from other projects are excluded.
+
 The owner API includes:
 
 - `GET/POST /api/admin/people`, `GET/PATCH /api/admin/people/:userId`
+- `POST /api/admin/people/:userId/contracts` and
+  `GET /api/admin/contracts/:contractId/file`
 - `PUT /api/admin/people/:userId/roles` with `{ "roles": ["studio-admin"] }`
   for a global role, or a project-specific assignment:
 

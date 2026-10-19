@@ -1,4 +1,7 @@
 // Global test setup
+const fs = require('fs/promises');
+const path = require('path');
+
 process.env.NODE_ENV = 'test';
 process.env.SESSION_SECRET = 'test_session_secret';
 process.env.REDIS_HOST = 'localhost';
@@ -60,4 +63,8 @@ afterAll(async () => {
       // Ignore errors during test cleanup
     }
   }
+  await fs.rm(path.resolve(__dirname, '../.test-contract-storage'), {
+    recursive: true,
+    force: true
+  });
 });

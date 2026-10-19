@@ -12,6 +12,7 @@ function createDatabase(seed = {}) {
     tasks: (seed.tasks || []).map(task => ({ ...task })),
     task_assignment: (seed.task_assignment || []).map(assignment => ({ ...assignment })),
     projects: (seed.projects || []).map(project => ({ ...project })),
+    project_memberships: (seed.project_memberships || []).map(membership => ({ ...membership })),
     users: (seed.users || [2, 3, 4, 5, 7, 9].map(id => ({ id, is_active: true })))
       .map(user => ({ ...user }))
   };
@@ -86,6 +87,10 @@ describe('Task Service Unit Tests', () => {
     test('creates a root task with task fields and assignees, then recalculates project progress', async () => {
       const { database, queryCalls } = useTransaction({
         tasks: [{ id: 3, project_id: 1, parent_task_id: null, progress: 100, weight: 1 }],
+        project_memberships: [
+          { project_id: 1, user_id: 2 },
+          { project_id: 1, user_id: 5 }
+        ],
         projects: [{ id: 1, progress: 0 }]
       });
       const createdTask = {
@@ -197,6 +202,43 @@ describe('Task Service Unit Tests', () => {
       expect(database.task_assignment).toEqual([]);
     });
 
+    test('rejects active assignees who are not assigned to the project', async () => {
+      const { database } = useTransaction({
+        projects: [{ id: 6, progress: 0 }],
+        project_memberships: [{ project_id: 6, user_id: 3 }]
+      });
+
+      await expect(taskService.createTask(6, 9, {
+        title: 'Task for another project person',
+        assignee_ids: [4]
+      })).rejects.toMatchObject({
+        code: 'INVALID_ASSIGNEES',
+        message: 'Every assignee must be assigned to this project'
+      });
+      expect(database.tasks).toEqual([]);
+      expect(database.task_assignment).toEqual([]);
+    });
+
+    test('rejects assigning a non-member to an existing project task', async () => {
+      const { database } = useTransaction({
+        tasks: [{
+          id: 1,
+          project_id: 6,
+          parent_task_id: null,
+          progress: 0,
+          weight: 1
+        }],
+        projects: [{ id: 6, progress: 0 }]
+      });
+
+      await expect(taskService.updateTask(1, { assignee_ids: [4] }, 6))
+        .rejects.toMatchObject({
+          code: 'INVALID_ASSIGNEES',
+          message: 'Every assignee must be assigned to this project'
+        });
+      expect(database.task_assignment).toEqual([]);
+    });
+
     test('rejects a parent task from another project', async () => {
       const { database } = useTransaction({
         tasks: [{ id: 10, project_id: 99, parent_task_id: null, progress: 0, weight: 1 }],
@@ -219,6 +261,14 @@ describe('Task Service Unit Tests', () => {
       await expect(taskService.getProjectTasks(5)).resolves.toBe(projectTasks);
       expect(taskRepository.findByProject).toHaveBeenCalledWith(5);
     });
+
+    test('returns dated project tasks through the timeline repository query', async () => {
+      const datedTasks = [{ id: 1, parent_task_id: null, start_date: '2026-06-01' }];
+      taskRepository.findDatedByProject.mockResolvedValue(datedTasks);
+
+      await expect(taskService.getProjectTimeline(5)).resolves.toBe(datedTasks);
+      expect(taskRepository.findDatedByProject).toHaveBeenCalledWith(5);
+    });
   });
 
   describe('updateTask', () => {
@@ -235,6 +285,10 @@ describe('Task Service Unit Tests', () => {
           weight: 1
         }],
         task_assignment: [{ task_id: 1, user_id: 2 }],
+        project_memberships: [
+          { project_id: 4, user_id: 3 },
+          { project_id: 4, user_id: 4 }
+        ],
         projects: [{ id: 4, progress: 0 }]
       });
       taskRepository.findById.mockResolvedValue({ id: 1, title: 'Updated' });
@@ -283,6 +337,7 @@ describe('Task Service Unit Tests', () => {
           id: 1, project_id: 4, parent_task_id: null, title: 'Keep', progress: 30, weight: 1
         }],
         task_assignment: [{ task_id: 1, user_id: 2 }],
+        project_memberships: [{ project_id: 4, user_id: 2 }],
         projects: [{ id: 4, progress: 0 }]
       });
       taskRepository.findById.mockResolvedValue({ id: 1, title: 'Keep' });

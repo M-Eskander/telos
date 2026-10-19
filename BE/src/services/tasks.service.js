@@ -1,7 +1,7 @@
 const taskRepo = require('../repositories/task.repo');
 const knex = require('../config/knex');
 
-async function getActiveAssigneeIds(trx, assigneeIds) {
+async function getActiveAssigneeIds(trx, projectId, assigneeIds) {
   if (!Array.isArray(assigneeIds)) {
     const error = new TypeError('assignee_ids must be an array');
     error.code = 'INVALID_ASSIGNEES';
@@ -23,6 +23,15 @@ async function getActiveAssigneeIds(trx, assigneeIds) {
     error.code = 'INVALID_ASSIGNEES';
     throw error;
   }
+  const projectMembers = await trx('project_memberships')
+    .where({ project_id: projectId })
+    .whereIn('user_id', ids)
+    .select('user_id');
+  if (projectMembers.length !== ids.length) {
+    const error = new Error('Every assignee must be assigned to this project');
+    error.code = 'INVALID_ASSIGNEES';
+    throw error;
+  }
   return ids;
 }
 
@@ -40,7 +49,7 @@ async function createTask(projectId, userId, data) {
     }
     const assigneeIds = data.assignee_ids === undefined
       ? []
-      : await getActiveAssigneeIds(trx, data.assignee_ids);
+      : await getActiveAssigneeIds(trx, projectId, data.assignee_ids);
     const taskData = {
       project_id: projectId,
       title: data.title,
@@ -80,6 +89,10 @@ async function getProjectTasks(projectId) {
   return await taskRepo.findByProject(projectId);
 }
 
+async function getProjectTimeline(projectId) {
+  return taskRepo.findDatedByProject(projectId);
+}
+
 async function updateTask(id, data, projectId = null) {
   const updatedTask = await knex.transaction(async trx => {
     const taskQuery = trx('tasks').where({ id });
@@ -112,7 +125,7 @@ async function updateTask(id, data, projectId = null) {
     }
 
     if (data.assignee_ids !== undefined) {
-      const assigneeIds = await getActiveAssigneeIds(trx, data.assignee_ids);
+      const assigneeIds = await getActiveAssigneeIds(trx, task.project_id, data.assignee_ids);
       await trx('task_assignment').where({ task_id: id }).del();
       if (assigneeIds.length > 0) {
         const records = assigneeIds.map(uid => ({ task_id: id, user_id: uid }));
@@ -197,6 +210,7 @@ async function recalculateProjectProgress(projectId, trx) {
 module.exports = {
   createTask,
   getProjectTasks,
+  getProjectTimeline,
   updateTask,
   deleteTask,
   recalculateParentProgress,

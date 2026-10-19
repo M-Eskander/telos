@@ -1,17 +1,20 @@
 const express = require('express');
 const controller = require('../controllers/accessControl.controller');
 const { requireOwner } = require('../middleware/auth.middleware');
+const contractUpload = require('../middleware/contractUpload.middleware');
 
 const router = express.Router();
 router.use(requireOwner);
 
 router.route('/people')
   .get(controller.listPeople)
-  .post(controller.createPerson);
+  .post(contractUpload, controller.createPerson);
 router.get('/people/:userId', controller.getPerson);
 router.patch('/people/:userId', controller.updatePerson);
+router.post('/people/:userId/contracts', contractUpload, controller.addPersonContract);
 router.put('/people/:userId/roles', controller.setPersonRoles);
 router.put('/people/:userId/attributes', controller.setPersonAttributes);
+router.get('/contracts/:contractId/file', controller.getContractFile);
 
 router.route('/roles')
   .get(controller.listRoles)

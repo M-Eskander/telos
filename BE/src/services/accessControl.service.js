@@ -1,6 +1,7 @@
 const knex = require('../config/knex');
 const bcrypt = require('bcryptjs');
 const pdpService = require('./pdp.service');
+const contractService = require('./contract.service');
 
 async function listPeople() {
   const people = await knex('users')
@@ -14,9 +15,11 @@ async function listPeople() {
       'user_roles.resource_type as resourceType',
       'user_roles.resource_id as resourceId'
     );
+  const contracts = await knex('contracts').orderBy('start_date', 'desc').orderBy('id', 'desc');
   const ownerAccount = await knex('owner_account').where({ id: 1 }).first();
   const rolesByUser = new Map();
   const assignmentsByUser = new Map();
+  const contractsByUser = new Map();
   for (const assignment of assignments) {
     if (!rolesByUser.has(assignment.user_id)) rolesByUser.set(assignment.user_id, []);
     rolesByUser.get(assignment.user_id).push(assignment.name);
@@ -27,10 +30,17 @@ async function listPeople() {
       resourceId: assignment.resourceId
     });
   }
+  for (const contract of contracts) {
+    if (!contractsByUser.has(contract.user_id)) contractsByUser.set(contract.user_id, []);
+    contractsByUser.get(contract.user_id).push(contractService.publicContract(contract));
+  }
   return people.map(person => ({
     ...person,
     roles: rolesByUser.get(person.id) || [],
     roleAssignments: assignmentsByUser.get(person.id) || [],
+    contracts: contractsByUser.get(person.id) || [],
+    hasContract: (contractsByUser.get(person.id) || [])
+      .some(contract => contract.uploaded && contract.start_date && contract.end_date),
     isOwner: !!ownerAccount && ownerAccount.user_id === person.id
   }));
 }
@@ -114,41 +124,53 @@ async function getPersonAccessDetails(userId) {
       .select('attributes.id as attributeId', 'attributes.name', 'attributes.resource', 'user_attributes.resource_id as resourceId', 'user_attributes.mode')
   ]);
   const ownerAccount = await knex('owner_account').where({ id: 1, user_id: userId }).first();
-  return { ...person, roles, attributes, isOwner: !!ownerAccount };
+  const contracts = await contractService.listContractsForUser(userId);
+  return { ...person, roles, attributes, contracts, isOwner: !!ownerAccount };
 }
 
-async function createPerson(data) {
+async function createPerson(data, contractFile) {
   const password = await bcrypt.hash(data.password, 10);
-  return knex.transaction(async trx => {
-    const roles = await normalizeRoleAssignments(trx, data.roles === undefined ? [] : data.roles);
-    const [id] = await trx('users').insert({
-      name: data.name,
-      email: data.email,
-      phone_number: data.phone_number,
-      password,
-      location: data.location || null,
-      age: data.age === undefined ? null : data.age,
-      is_active: data.is_active === undefined ? true : data.is_active,
-      created_at: new Date()
-    });
-    const user = await trx('users').where({ id }).first();
-    if (roles.length) {
-      await trx('user_roles').insert(roles.map(role => ({
-        user_id: id,
-        role_id: role.id,
-        resource_type: role.resourceType,
-        resource_id: role.resourceId,
-        scope_key: role.resourceType ? `${role.resourceType}:${role.resourceId}` : ''
-      })));
+  const created = await contractService.createPersonWithContract(
+    contractFile,
+    {
+      start_date: data.contract_start_date,
+      end_date: data.contract_end_date,
+      terms: data.contract_terms
+    },
+    async trx => {
+      const roles = await normalizeRoleAssignments(trx, data.roles === undefined ? [] : data.roles);
+      const [id] = await trx('users').insert({
+        name: data.name,
+        email: data.email,
+        phone_number: data.phone_number,
+        password,
+        location: data.location || null,
+        age: data.age === undefined ? null : data.age,
+        is_active: data.is_active === undefined ? true : data.is_active,
+        created_at: new Date()
+      });
+      const user = await trx('users').where({ id }).first();
+      if (roles.length) {
+        await trx('user_roles').insert(roles.map(role => ({
+          user_id: id,
+          role_id: role.id,
+          resource_type: role.resourceType,
+          resource_id: role.resourceId,
+          scope_key: role.resourceType ? `${role.resourceType}:${role.resourceId}` : ''
+        })));
+      }
+      user.roles = [...new Set(roles.map(role => role.name))];
+      user.roleAssignments = roles.map(({ name, resourceType, resourceId }) => ({
+        name,
+        resourceType,
+        resourceId
+      }));
+      return user;
     }
-    user.roles = [...new Set(roles.map(role => role.name))];
-    user.roleAssignments = roles.map(({ name, resourceType, resourceId }) => ({
-      name,
-      resourceType,
-      resourceId
-    }));
-    return safePerson(user);
-  });
+  );
+  created.user.contracts = [created.contract];
+  created.user.hasContract = true;
+  return safePerson(created.user);
 }
 
 function safePerson(user) {
@@ -162,9 +184,28 @@ async function updatePerson(userId, data) {
       await knex('owner_account').where({ user_id: userId }).first()) {
     throw new TypeError('The owner account cannot be archived');
   }
+  if (data.is_active === true) {
+    const hasUploadedContract = await knex('contracts')
+      .where({ user_id: userId })
+      .whereNotNull('storage_key')
+      .whereNotNull('start_date')
+      .whereNotNull('end_date')
+      .first();
+    if (!hasUploadedContract) {
+      throw new TypeError('An uploaded contract with start and end dates is required before activating a person');
+    }
+  }
   const updated = await knex('users').where({ id: userId }).update(data);
   if (!updated) return null;
   return safePerson(await knex('users').where({ id: userId }).first());
+}
+
+async function addPersonContract(userId, file, metadata) {
+  return contractService.addContract(userId, file, metadata);
+}
+
+async function getContractFile(contractId) {
+  return contractService.getContractFile(contractId);
 }
 
 async function listRoles() {
@@ -367,6 +408,8 @@ module.exports = {
   getPersonAccessDetails,
   createPerson,
   updatePerson,
+  addPersonContract,
+  getContractFile,
   listRoles,
   getRoleAccessDetails,
   createRole,

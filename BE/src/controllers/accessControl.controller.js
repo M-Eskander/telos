@@ -1,5 +1,21 @@
 const accessControlService = require('../services/accessControl.service');
 
+function parsePersonFields(body) {
+  const fields = { ...body };
+  if (fields.age === '') fields.age = null;
+  else if (typeof fields.age === 'string') fields.age = Number(fields.age);
+  if (fields.is_active === 'true') fields.is_active = true;
+  else if (fields.is_active === 'false') fields.is_active = false;
+  if (typeof fields.roles === 'string') {
+    try {
+      fields.roles = JSON.parse(fields.roles);
+    } catch {
+      throw new TypeError('roles must be a JSON array');
+    }
+  }
+  return fields;
+}
+
 function isConstraintError(error) {
   return typeof error.code === 'string' &&
     (error.code === 'ER_DUP_ENTRY' || error.code.startsWith('SQLITE_CONSTRAINT'));
@@ -25,7 +41,8 @@ exports.getPerson = async (req, res, next) => {
 
 exports.createPerson = async (req, res, next) => {
   try {
-    const { name, email, phone_number, password } = req.body || {};
+    const fields = parsePersonFields(req.body || {});
+    const { name, email, phone_number, password } = fields;
     if (!name || !email || !phone_number || !password) {
       return res.status(400).json({ ok: false, message: 'Name, email, phone number, and password are required' });
     }
@@ -33,20 +50,23 @@ exports.createPerson = async (req, res, next) => {
         typeof phone_number !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ ok: false, message: 'Person fields must be strings' });
     }
-    if (req.body.is_active !== undefined && typeof req.body.is_active !== 'boolean') {
+    if (fields.is_active !== undefined && typeof fields.is_active !== 'boolean') {
       return res.status(400).json({ ok: false, message: 'is_active must be a boolean' });
     }
-    if (req.body.age !== undefined && req.body.age !== null &&
-        (!Number.isInteger(req.body.age) || req.body.age < 0)) {
+    if (fields.age !== undefined && fields.age !== null &&
+        (!Number.isInteger(fields.age) || fields.age < 0)) {
       return res.status(400).json({ ok: false, message: 'Age must be a non-negative integer' });
     }
+    if (!req.file) {
+      return res.status(400).json({ ok: false, message: 'A contract PDF file is required' });
+    }
     const person = await accessControlService.createPerson({
-      ...req.body,
+      ...fields,
       name,
       email,
       phone_number,
       password
-    });
+    }, req.file);
     return res.status(201).json({ ok: true, person });
   } catch (error) {
     if (error instanceof TypeError) {
@@ -55,6 +75,43 @@ exports.createPerson = async (req, res, next) => {
     if (isConstraintError(error)) {
       return res.status(409).json({ ok: false, message: 'A person with this email already exists' });
     }
+    return next(error);
+  }
+};
+
+exports.addPersonContract = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, message: 'A contract PDF file is required' });
+    }
+    const contract = await accessControlService.addPersonContract(
+      req.params.userId,
+      req.file,
+      {
+        start_date: req.body.contract_start_date,
+        end_date: req.body.contract_end_date,
+        terms: req.body.contract_terms
+      }
+    );
+    if (!contract) return res.status(404).json({ ok: false, message: 'Person not found' });
+    return res.status(201).json({ ok: true, contract });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      return res.status(400).json({ ok: false, message: error.message });
+    }
+    if (error.code === 'PERSON_NOT_FOUND') {
+      return res.status(404).json({ ok: false, message: error.message });
+    }
+    return next(error);
+  }
+};
+
+exports.getContractFile = async (req, res, next) => {
+  try {
+    const contract = await accessControlService.getContractFile(req.params.contractId);
+    if (!contract) return res.status(404).json({ ok: false, message: 'Uploaded contract not found' });
+    return res.type(contract.mimeType).attachment(contract.originalName).send(contract.file);
+  } catch (error) {
     return next(error);
   }
 };

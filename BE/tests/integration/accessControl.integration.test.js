@@ -9,13 +9,27 @@ const setupSecret = 'test-owner-setup-secret-1234567890';
 let ownerAgent;
 
 async function createPerson(agent, overrides = {}) {
-  return agent.post('/api/admin/people').send({
+  const fields = {
     name: 'Test Person',
     email: 'person@example.com',
     phone_number: '5550100',
     password: 'password',
+    contract_start_date: '2026-01-01',
+    contract_end_date: '2027-01-01',
     ...overrides
-  });
+  };
+  let requestBuilder = agent.post('/api/admin/people');
+  for (const [field, value] of Object.entries(fields)) {
+    requestBuilder = requestBuilder.field(
+      field,
+      value === null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value)
+    );
+  }
+  return requestBuilder.attach(
+    'contract',
+    Buffer.from('%PDF-1.7\nTest contract\n%%EOF'),
+    { filename: 'contract.pdf', contentType: 'application/pdf' }
+  );
 }
 
 beforeAll(() => {
@@ -25,6 +39,7 @@ beforeAll(() => {
 beforeEach(async () => {
   bcrypt.compare.mockResolvedValue(true);
   await testDb('owner_account').del();
+  await testDb('contracts').del();
   await testDb('permission_attributes').del();
   await testDb('permission_grant_groups').del();
   await testDb('user_attributes').del();
@@ -130,12 +145,14 @@ describe('Access-control administration API', () => {
   test('validates people and role assignments without persisting invalid input', async () => {
     const noRequiredFields = await ownerAgent.post('/api/admin/people').send({});
     expect(noRequiredFields.status).toBe(400);
-    const wrongFieldType = await createPerson(ownerAgent, { name: 7 });
-    expect(wrongFieldType.status).toBe(400);
+    const emptyName = await createPerson(ownerAgent, { name: '' });
+    expect(emptyName.status).toBe(400);
     const invalidAge = await createPerson(ownerAgent, { age: -1 });
     expect(invalidAge.status).toBe(400);
-    const invalidActive = await createPerson(ownerAgent, { is_active: 'false' });
+    const invalidActive = await createPerson(ownerAgent, { is_active: 'no' });
     expect(invalidActive.status).toBe(400);
+    const malformedRoleField = await createPerson(ownerAgent, { roles: 'not-json' });
+    expect(malformedRoleField.status).toBe(400);
     const duplicateEmail = await createPerson(ownerAgent, { email: 'owner@example.com' });
     expect(duplicateEmail.status).toBe(409);
 
@@ -438,6 +455,10 @@ describe('Access-control administration API', () => {
     expect((await ownerAgent.post('/api/projects').send({ description: 'Missing name' })).status).toBe(400);
 
     const assignee = await createPerson(ownerAgent, { email: 'assignee@example.com' });
+    const memberAssignment = await ownerAgent.put(
+      `/api/projects/${projectId}/members/${assignee.body.person.id}`
+    ).send({ departmentId: null });
+    expect(memberAssignment.status).toBe(200);
     const task = await ownerAgent.post(`/api/projects/${projectId}/tasks`).send({
       title: 'Root task',
       assignee_ids: [assignee.body.person.id],

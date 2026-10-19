@@ -18,6 +18,8 @@ coverage/
 BE/*.sqlite3
 BE/dev.sqlite3
 BE/test.sqlite3
+BE/storage/contracts/
+BE/.test-contract-storage/
 
 # Environment overrides
 .env.local

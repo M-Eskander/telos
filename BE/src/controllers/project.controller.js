@@ -1,5 +1,25 @@
 const projectService = require('../services/project.service');
 const pdpService = require('../services/pdp.service');
+const taskService = require('../services/tasks.service');
+
+function isConstraintError(error) {
+    return typeof error.code === 'string' &&
+        (error.code === 'ER_DUP_ENTRY' || error.code.startsWith('SQLITE_CONSTRAINT'));
+}
+
+function validPositiveId(value) {
+    const id = Number(value);
+    return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+async function ensureProjectExists(req, res) {
+    const project = await projectService.getProjectById(req.params.id);
+    if (!project) {
+        res.status(404).json({ ok: false, message: 'Project not found' });
+        return false;
+    }
+    return true;
+}
 
 exports.listProjects = async (req, res, next) => {
     try {
@@ -42,6 +62,109 @@ exports.getProjectById = async (req, res, next) => {
         res.json({ ok: true, project });
     } catch (err) {
         next(err);
+    }
+};
+
+exports.listDepartments = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const departments = await projectService.listProjectDepartments(req.params.id);
+        return res.json({ ok: true, departments });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+exports.createDepartment = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const { name } = req.body || {};
+        if (typeof name !== 'string' || !name.trim()) {
+            return res.status(400).json({ ok: false, message: 'Department name is required' });
+        }
+        const department = await projectService.createProjectDepartment(req.params.id, name);
+        return res.status(201).json({ ok: true, department });
+    } catch (err) {
+        if (isConstraintError(err)) {
+            return res.status(409).json({ ok: false, message: 'Department already exists in this project' });
+        }
+        return next(err);
+    }
+};
+
+exports.deleteDepartment = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const departmentId = validPositiveId(req.params.departmentId);
+        if (!departmentId) {
+            return res.status(400).json({ ok: false, message: 'Department ID must be a positive integer' });
+        }
+        const deleted = await projectService.deleteProjectDepartment(req.params.id, departmentId);
+        if (!deleted) return res.status(404).json({ ok: false, message: 'Department not found' });
+        return res.json({ ok: true });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+exports.listMembers = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const members = await projectService.listProjectMembers(req.params.id);
+        return res.json({ ok: true, members });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+exports.assignMember = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const userId = validPositiveId(req.params.userId);
+        if (!userId) {
+            return res.status(400).json({ ok: false, message: 'Person ID must be a positive integer' });
+        }
+        const { departmentId = null } = req.body || {};
+        const normalizedDepartmentId = departmentId === null ? null : validPositiveId(departmentId);
+        if (departmentId !== null && !normalizedDepartmentId) {
+            return res.status(400).json({ ok: false, message: 'Department ID must be a positive integer or null' });
+        }
+        const member = await projectService.assignProjectMember(
+            req.params.id,
+            userId,
+            normalizedDepartmentId
+        );
+        return res.json({ ok: true, member });
+    } catch (err) {
+        if (err instanceof TypeError) {
+            return res.status(400).json({ ok: false, message: err.message });
+        }
+        return next(err);
+    }
+};
+
+exports.removeMember = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const userId = validPositiveId(req.params.userId);
+        if (!userId) {
+            return res.status(400).json({ ok: false, message: 'Person ID must be a positive integer' });
+        }
+        const deleted = await projectService.removeProjectMember(req.params.id, userId);
+        if (!deleted) return res.status(404).json({ ok: false, message: 'Project member not found' });
+        return res.json({ ok: true });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+exports.getProjectTimeline = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const tasks = await taskService.getProjectTimeline(req.params.id);
+        return res.json({ ok: true, tasks });
+    } catch (err) {
+        return next(err);
     }
 };
 

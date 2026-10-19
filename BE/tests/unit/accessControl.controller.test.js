@@ -8,7 +8,15 @@ describe('Access-control controller error propagation', () => {
     ['listPeople', 'listPeople', {}],
     ['getPerson', 'getPersonAccessDetails', { params: { userId: '1' } }],
     ['createPerson', 'createPerson', {
-      body: { name: 'Person', email: 'person@example.com', phone_number: '5550100', password: 'password' }
+      body: {
+        name: 'Person',
+        email: 'person@example.com',
+        phone_number: '5550100',
+        password: 'password',
+        contract_start_date: '2026-01-01',
+        contract_end_date: '2027-01-01'
+      },
+      file: { buffer: Buffer.from('%PDF-1.7') }
     }],
     ['updatePerson', 'updatePerson', { params: { userId: '1' }, body: {} }],
     ['setPersonRoles', 'setPersonRoles', { params: { userId: '1' }, body: { roles: [] } }],

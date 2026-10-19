@@ -14,6 +14,7 @@ beforeAll(() => {
 
 beforeEach(async () => {
   await testDb('owner_account').del();
+  await testDb('contracts').del();
   await testDb('user_attributes').del();
   await testDb('role_attributes').del();
   await testDb('user_roles').del();
@@ -128,17 +129,23 @@ describe('Owner-managed authorization model', () => {
     expect(roleResponse.status).toBe(201);
     expect(attributeResponse.status).toBe(201);
 
-    const personResponse = await ownerAgent.post('/api/admin/people').send({
-      name: 'Project Manager',
-      email: 'manager@example.com',
-      phone_number: '5550103',
-      password: 'password',
-      roles: [{
+    const personResponse = await ownerAgent.post('/api/admin/people')
+      .field('name', 'Project Manager')
+      .field('email', 'manager@example.com')
+      .field('phone_number', '5550103')
+      .field('password', 'password')
+      .field('contract_start_date', '2026-01-01')
+      .field('contract_end_date', '2027-01-01')
+      .field('roles', JSON.stringify([{
         name: 'project-manager',
         resourceType: 'project',
         resourceId: firstProject.body.project.id
-      }]
-    });
+      }]))
+      .attach(
+        'contract',
+        Buffer.from('%PDF-1.7\nTest contract\n%%EOF'),
+        { filename: 'manager.pdf', contentType: 'application/pdf' }
+      );
     expect(personResponse.status).toBe(201);
     const scopedAssignment = await ownerAgent.put(
       `/api/admin/people/${personResponse.body.person.id}/roles`

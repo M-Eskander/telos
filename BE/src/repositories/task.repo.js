@@ -50,6 +50,44 @@ async function findByProject(projectId) {
   return parentTasks;
 }
 
+async function findDatedByProject(projectId) {
+  const tasks = await knex('tasks')
+    .where({ project_id: projectId })
+    .andWhere(function() {
+      this.whereNotNull('start_date').orWhereNotNull('end_date');
+    })
+    .orderByRaw('COALESCE(start_date, end_date) ASC')
+    .orderBy('end_date')
+    .orderBy('id')
+    .select('*');
+  if (tasks.length === 0) return [];
+
+  const taskIds = tasks.map(task => task.id);
+  const assignments = await knex('task_assignment')
+    .join('users', 'task_assignment.user_id', 'users.id')
+    .whereIn('task_assignment.task_id', taskIds)
+    .where('users.is_active', true)
+    .select(
+      'task_assignment.task_id as taskId',
+      'users.id',
+      'users.name',
+      'users.email'
+    );
+  const assigneesByTask = new Map();
+  for (const assignment of assignments) {
+    if (!assigneesByTask.has(assignment.taskId)) assigneesByTask.set(assignment.taskId, []);
+    assigneesByTask.get(assignment.taskId).push({
+      id: assignment.id,
+      name: assignment.name,
+      email: assignment.email
+    });
+  }
+  return tasks.map(task => ({
+    ...task,
+    assignees: assigneesByTask.get(task.id) || []
+  }));
+}
+
 async function update(id, updateData) {
   await knex('tasks').where({ id }).update(updateData);
   return findById(id);
@@ -75,6 +113,7 @@ module.exports = {
   create,
   findById,
   findByProject,
+  findDatedByProject,
   update,
   remove,
   setAssignees
