@@ -181,6 +181,34 @@ describe('Owner-managed authorization model', () => {
       alternatives: [[attributeResponse.body.attribute.id]]
     });
     expect(configured.status).toBe(200);
+    let readTaskPermission = await testDb('permissions')
+      .where({ action: 'read', resource: 'task' })
+      .first();
+    if (!readTaskPermission) {
+      const createdPermission = await ownerAgent.post('/api/admin/permissions').send({
+        action: 'read',
+        resource: 'task'
+      });
+      expect(createdPermission.status).toBe(201);
+      readTaskPermission = createdPermission.body.permission;
+    }
+    const taskReadConfigured = await ownerAgent.put(
+      `/api/admin/permissions/${readTaskPermission.id}/grants`
+    ).send({
+      alternatives: [[attributeResponse.body.attribute.id]]
+    });
+    expect(taskReadConfigured.status).toBe(200);
+    await ownerAgent.put(
+      `/api/projects/${firstProject.body.project.id}/members/${personResponse.body.person.id}`
+    ).send({ departmentId: null });
+    const firstProjectTask = await ownerAgent.post(
+      `/api/projects/${firstProject.body.project.id}/tasks`
+    ).send({ title: 'Project-scoped task' });
+    const secondProjectTask = await ownerAgent.post(
+      `/api/projects/${secondProject.body.project.id}/tasks`
+    ).send({ title: 'Other project task' });
+    expect(firstProjectTask.status).toBe(201);
+    expect(secondProjectTask.status).toBe(201);
 
     const managerAgent = request.agent(app);
     const managerLogin = await managerAgent.post('/api/auth/login').send({
@@ -207,5 +235,47 @@ describe('Owner-managed authorization model', () => {
     );
     expect(firstProjectAccess.status).toBe(200);
     expect(secondProjectAccess.status).toBe(403);
+    const firstProjectTasks = await managerAgent.get(
+      `/api/projects/${firstProject.body.project.id}/tasks`
+    );
+    const secondProjectTasks = await managerAgent.get(
+      `/api/projects/${secondProject.body.project.id}/tasks`
+    );
+    expect(firstProjectTasks.status).toBe(200);
+    expect(firstProjectTasks.body.data.map(task => task.id)).toContain(firstProjectTask.body.data.id);
+    expect(secondProjectTasks.status).toBe(403);
+    const deniedTaskCreate = await managerAgent.post(
+      `/api/projects/${firstProject.body.project.id}/tasks`
+    ).send({ title: 'Manager cannot create without permission' });
+    const deniedTaskUpdate = await managerAgent.patch(
+      `/api/projects/${firstProject.body.project.id}/tasks/${firstProjectTask.body.data.id}`
+    ).send({ title: 'Manager cannot update without permission' });
+    const deniedTaskDelete = await managerAgent.delete(
+      `/api/projects/${firstProject.body.project.id}/tasks/${firstProjectTask.body.data.id}`
+    );
+    expect([
+      deniedTaskCreate.status,
+      deniedTaskUpdate.status,
+      deniedTaskDelete.status
+    ]).toEqual([403, 403, 403]);
+
+    const unauthenticatedTaskList = await request(app).get(
+      `/api/projects/${firstProject.body.project.id}/tasks`
+    );
+    const unauthenticatedTaskCreate = await request(app).post(
+      `/api/projects/${firstProject.body.project.id}/tasks`
+    ).send({ title: 'Anonymous task' });
+    const unauthenticatedTaskUpdate = await request(app).patch(
+      `/api/projects/${firstProject.body.project.id}/tasks/${firstProjectTask.body.data.id}`
+    ).send({ title: 'Anonymous update' });
+    const unauthenticatedTaskDelete = await request(app).delete(
+      `/api/projects/${firstProject.body.project.id}/tasks/${firstProjectTask.body.data.id}`
+    );
+    expect([
+      unauthenticatedTaskList.status,
+      unauthenticatedTaskCreate.status,
+      unauthenticatedTaskUpdate.status,
+      unauthenticatedTaskDelete.status
+    ]).toEqual([401, 401, 401, 401]);
   });
 });

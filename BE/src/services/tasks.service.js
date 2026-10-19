@@ -1,5 +1,72 @@
 const taskRepo = require('../repositories/task.repo');
 const knex = require('../config/knex');
+const TASK_STATUSES = new Set(['todo', 'in_progress', 'done']);
+const TASK_PRIORITIES = new Set(['low', 'medium', 'high', 'critical']);
+
+function invalidTask(message) {
+  const error = new TypeError(message);
+  error.code = 'INVALID_TASK';
+  return error;
+}
+
+function isValidDate(value) {
+  return value === null || (
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`)) &&
+    new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value
+  );
+}
+
+function validateTaskData(data, existingTask = null) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw invalidTask('Task data must be an object');
+  }
+  if (existingTask === null && (typeof data.title !== 'string' || !data.title.trim())) {
+    throw invalidTask('Task title is required');
+  }
+  if (data.title !== undefined && (typeof data.title !== 'string' || !data.title.trim())) {
+    throw invalidTask('Task title must be a non-empty string');
+  }
+  if (data.description !== undefined && data.description !== null &&
+      typeof data.description !== 'string') {
+    throw invalidTask('Task description must be a string or null');
+  }
+  if (data.status !== undefined &&
+      (typeof data.status !== 'string' || !TASK_STATUSES.has(data.status))) {
+    throw invalidTask('Task status must be todo, in_progress, or done');
+  }
+  if (data.priority !== undefined &&
+      (typeof data.priority !== 'string' || !TASK_PRIORITIES.has(data.priority))) {
+    throw invalidTask('Task priority must be low, medium, high, or critical');
+  }
+  if (data.progress !== undefined &&
+      (!Number.isInteger(data.progress) || data.progress < 0 || data.progress > 100)) {
+    throw invalidTask('Task progress must be an integer from 0 to 100');
+  }
+  if (data.weight !== undefined &&
+      (typeof data.weight !== 'number' || !Number.isFinite(data.weight) || data.weight <= 0)) {
+    throw invalidTask('Task weight must be a positive finite number');
+  }
+  if (data.parent_task_id !== undefined && data.parent_task_id !== null &&
+      (!Number.isInteger(Number(data.parent_task_id)) || Number(data.parent_task_id) < 1)) {
+    throw invalidTask('parent_task_id must be a positive integer');
+  }
+  for (const field of ['start_date', 'end_date']) {
+    if (data[field] !== undefined && !isValidDate(data[field])) {
+      throw invalidTask(`${field} must be a valid YYYY-MM-DD date or null`);
+    }
+  }
+  const startDate = data.start_date === undefined
+    ? existingTask && existingTask.start_date
+    : data.start_date;
+  const endDate = data.end_date === undefined
+    ? existingTask && existingTask.end_date
+    : data.end_date;
+  if (startDate && endDate && endDate < startDate) {
+    throw invalidTask('end_date must be on or after start_date');
+  }
+}
 
 async function getActiveAssigneeIds(trx, projectId, assigneeIds) {
   if (!Array.isArray(assigneeIds)) {
@@ -36,8 +103,9 @@ async function getActiveAssigneeIds(trx, projectId, assigneeIds) {
 }
 
 async function createTask(projectId, userId, data) {
+  validateTaskData(data);
   const task = await knex.transaction(async trx => {
-    if (data.parent_task_id) {
+    if (data.parent_task_id !== undefined && data.parent_task_id !== null) {
       const parentTask = await trx('tasks')
         .where({ id: data.parent_task_id, project_id: projectId })
         .first();
@@ -104,6 +172,7 @@ async function updateTask(id, data, projectId = null) {
       }
       return null;
     }
+    validateTaskData(data, task);
 
     const allowedUpdates = {
       title: data.title,
@@ -147,8 +216,23 @@ async function updateTask(id, data, projectId = null) {
   return taskRepo.findById(updatedTask.id);
 }
 async function deleteTask(id, projectId = null) {
-  if (projectId === null || projectId === undefined) return taskRepo.remove(id);
-  return knex('tasks').where({ id, project_id: projectId }).del();
+  return knex.transaction(async trx => {
+    const taskQuery = trx('tasks').where({ id });
+    if (projectId !== null && projectId !== undefined) {
+      taskQuery.andWhere({ project_id: projectId });
+    }
+    const task = await taskQuery.first();
+    if (!task) return 0;
+
+    const deleted = await trx('tasks').where({ id: task.id }).del();
+    if (!deleted) return 0;
+    if (task.parent_task_id) {
+      await recalculateParentProgress(task.parent_task_id, trx);
+    } else {
+      await recalculateProjectProgress(task.project_id, trx);
+    }
+    return deleted;
+  });
 }
 
 // Helper to recalculate and update parent task progress based on its subtasks
@@ -156,7 +240,16 @@ async function recalculateParentProgress(parentTaskId, trx) {
   if (!parentTaskId) return;
 
   const subtasks = await trx('tasks').where({ parent_task_id: parentTaskId });
-  if (subtasks.length === 0) return;
+  if (subtasks.length === 0) {
+    await trx('tasks').where({ id: parentTaskId }).update({ progress: 0 });
+    const parentTask = await trx('tasks').where({ id: parentTaskId }).first();
+    if (parentTask && parentTask.parent_task_id) {
+      await recalculateParentProgress(parentTask.parent_task_id, trx);
+    } else if (parentTask) {
+      await recalculateProjectProgress(parentTask.project_id, trx);
+    }
+    return;
+  }
 
   let totalWeight = 0;
   let weightedProgressSum = 0;

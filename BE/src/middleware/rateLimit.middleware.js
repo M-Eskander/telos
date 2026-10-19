@@ -1,5 +1,6 @@
 const DEFAULT_CAPACITY = 150;
 const DEFAULT_REFILL_RATE = DEFAULT_CAPACITY / (15 * 60);
+const DEFAULT_MAX_BUCKETS = 10000;
 
 function normalizePrefixes(endpointPrefixes) {
   const prefixes = Array.isArray(endpointPrefixes) ? endpointPrefixes : [endpointPrefixes];
@@ -24,25 +25,41 @@ function createTokenBucketRateLimiter(endpointPrefixes, options = {}) {
     throw new Error('At least one endpoint prefix is required');
   }
 
-  const capacity = options.capacity || DEFAULT_CAPACITY;
-  const refillRate = options.refillRate || DEFAULT_REFILL_RATE;
+  const capacity = options.capacity === undefined ? DEFAULT_CAPACITY : options.capacity;
+  const refillRate = options.refillRate === undefined ? DEFAULT_REFILL_RATE : options.refillRate;
+  const maxBuckets = options.maxBuckets === undefined ? DEFAULT_MAX_BUCKETS : options.maxBuckets;
   const keyGenerator = options.keyGenerator || ((req) => req.ip);
   const buckets = new Map();
+  const bucketTtlMs = capacity / refillRate * 1000;
+  let lastCleanup = 0;
 
-  if (!Number.isFinite(capacity) || capacity <= 0 || !Number.isFinite(refillRate) || refillRate <= 0) {
-    throw new Error('capacity and refillRate must be positive numbers');
+  if (!Number.isFinite(capacity) || capacity <= 0 ||
+      !Number.isFinite(refillRate) || refillRate <= 0 ||
+      !Number.isInteger(maxBuckets) || maxBuckets < 1) {
+    throw new Error('capacity, refillRate, and maxBuckets must be positive numbers');
+  }
+
+  function removeExpiredBuckets(now) {
+    if (now - lastCleanup < Math.min(60000, bucketTtlMs / 2)) return;
+    for (const [key, bucket] of buckets) {
+      if (now - bucket.lastSeen >= bucketTtlMs) buckets.delete(key);
+    }
+    lastCleanup = now;
   }
 
   function getBucket(key, now) {
+    removeExpiredBuckets(now);
     let bucket = buckets.get(key);
     if (!bucket) {
-      bucket = { tokens: capacity, lastRefill: now };
+      if (buckets.size >= maxBuckets) return null;
+      bucket = { tokens: capacity, lastRefill: now, lastSeen: now };
       buckets.set(key, bucket);
     }
 
     const elapsedSeconds = (now - bucket.lastRefill) / 1000;
     bucket.tokens = Math.min(capacity, bucket.tokens + elapsedSeconds * refillRate);
     bucket.lastRefill = now;
+    bucket.lastSeen = now;
     return bucket;
   }
 
@@ -55,6 +72,9 @@ function createTokenBucketRateLimiter(endpointPrefixes, options = {}) {
     const now = Date.now();
     const bucketKey = `${matchedPrefix}:${keyGenerator(req)}`;
     const bucket = getBucket(bucketKey, now);
+    if (!bucket) {
+      return res.status(503).json({ error: 'Rate limiter capacity reached; retry shortly.' });
+    }
     const remaining = Math.max(0, Math.floor(bucket.tokens));
 
     res.set('RateLimit-Limit', String(Math.floor(capacity)));
@@ -74,6 +94,7 @@ function createTokenBucketRateLimiter(endpointPrefixes, options = {}) {
   }
 
   limiter.reset = () => buckets.clear();
+  limiter.bucketCount = () => buckets.size;
   return limiter;
 }
 

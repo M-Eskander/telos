@@ -70,7 +70,7 @@ describe('Redis client configuration', () => {
       'error',
       'end'
     ]);
-    expect(mockClient.connect).toHaveBeenCalledTimes(1);
+    expect(mockClient.connect).not.toHaveBeenCalled();
   });
 
   test('prefers REDIS_URL and adds a configured password when the URL omits it', () => {
@@ -112,22 +112,13 @@ describe('Redis client configuration', () => {
     expect(mockedCreateClient.mock.calls[0][0].password).toBe('password');
   });
 
-  test('continues module initialization and logs when the initial connection fails', async () => {
-    const error = new Error('connection refused');
-    mockClient.connect.mockRejectedValue(error);
+  test('defers connection attempts to server startup', () => {
     const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
-    const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     expect(loadClient()).toBe(mockClient);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(errorLog).toHaveBeenCalledWith('Failed to connect to Redis:', 'connection refused');
-    expect(warning).toHaveBeenCalledWith(
-      'Sessions will use in-memory store (development mode)'
-    );
+    expect(mockClient.connect).not.toHaveBeenCalled();
+    expect(errorLog).not.toHaveBeenCalled();
     errorLog.mockRestore();
-    warning.mockRestore();
   });
 
   test('closes Redis and exits on SIGINT outside the test environment', async () => {

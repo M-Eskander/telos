@@ -1,20 +1,15 @@
-version: '3.8'
-
 services:
   telos-db:
     image: mysql:8.0
     container_name: telos-mysql
     restart: always
     environment:
-      # Sets the master root password
-      MYSQL_ROOT_PASSWORD: strongpassword
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in the environment}
       # Automatically initializes the database you specified
       MYSQL_DATABASE: telos_db
       # Creates the dedicated app user and password
       MYSQL_USER: telos_user
-      MYSQL_PASSWORD: strongpassword
-    ports:
-      - "3306:3306"
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in the environment}
     volumes:
       - telos_mysql_data:/var/lib/mysql
 
@@ -22,10 +17,10 @@ services:
     image: redis:7-alpine
     container_name: telos-redis
     restart: always
-    # Tells Redis to require the password you chose
-    command: redis-server --requirepass password
-    ports:
-      - "6379:6379"
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?Set REDIS_PASSWORD in the environment}
 
 volumes:
   telos_mysql_data:

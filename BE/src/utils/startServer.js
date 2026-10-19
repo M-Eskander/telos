@@ -2,13 +2,23 @@ const redisClient = require('../redis/client');
 
 module.exports = async function startServer(app) {
   try {
-    // Try to connect to Redis, but don't fail if unavailable
-    try {
-      await redisClient.connect();
-      console.log('Redis connected');
-    } catch (redisErr) {
-      console.warn('Redis not available, continuing without cache:', redisErr.message);
+    const isProduction = process.env.NODE_ENV === 'production';
+    if (!redisClient.isOpen && !redisClient.isReady) {
+      try {
+        await redisClient.connect();
+      } catch (redisError) {
+        if (isProduction) {
+          throw new Error('Redis is required in production; server startup aborted', {
+            cause: redisError
+          });
+        }
+        console.warn('Redis not available, continuing with in-memory sessions:', redisError.message);
+      }
     }
+    if (isProduction && !redisClient.isOpen && !redisClient.isReady) {
+      throw new Error('Redis is required in production; server startup aborted');
+    }
+    if (redisClient.isOpen || redisClient.isReady) console.log('Redis connected');
 
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, () => {

@@ -4,6 +4,14 @@ Run database migrations before using the access-control endpoints. Set a unique,
 strong `OWNER_SETUP_SECRET` in the backend environment before creating the first
 account.
 
+Production startup requires a `SESSION_SECRET` of at least 32 characters and a
+reachable Redis server for shared sessions. The server exits instead of
+switching to process-local sessions if Redis is unavailable. Development and
+test environments use an in-memory session store.
+`docker-compose.yml` requires `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD`, and
+`REDIS_PASSWORD` from the environment and keeps database/cache ports on the
+internal Compose network.
+
 Create the one-time owner with `POST /api/auth/bootstrap-owner`:
 
 ```json
@@ -71,6 +79,15 @@ subtasks that have either a start date or an end date, ordered by the first
 available date. Each task includes its `parent_task_id` and active assignees;
 undated tasks and tasks from other projects are excluded.
 
+Task authorization is inherited from the containing project: task routes
+evaluate task permissions against that project, not an independent task policy.
+Task updates and deletions also scope the task ID to the requested project.
+Task writes require a non-empty title; status `todo`, `in_progress`, or `done`;
+priority `low`, `medium`, `high`, or `critical`; integer progress from 0 to 100;
+positive finite weight; valid `YYYY-MM-DD` dates; and an end date no earlier
+than the start date. These domain constraints are enforced by the task service
+before database writes.
+
 The owner API includes:
 
 - `GET/POST /api/admin/people`, `GET/PATCH /api/admin/people/:userId`
@@ -119,7 +136,13 @@ rule are ANDed; separate rules are ORed. For example:
 ```
 
 This grants access when attributes 3 **and** 8 are both present, or when
-attribute 11 is present. An empty alternative list (`[]`) denies access;
-`[[]]` is public access and should only be configured intentionally. A person-level attribute in `remove` mode
+attribute 11 is present. An empty alternative list (`[]`) denies access. An empty grant rule (`[[]]`)
+is accepted only for permissions whose resource is explicitly `public`; for
+all other resources it is rejected to prevent accidental allow-all access. A person-level attribute in `remove` mode
 overrides the matching role attribute, including for the matching project
 scope.
+
+The API rate limit is 150 requests per 15 minutes per client IP. Its in-memory
+bucket map is capped at 10,000 entries and is process-local. Multi-instance
+deployments should use a shared rate-limiting service in front of the app or a
+shared limiter implementation.

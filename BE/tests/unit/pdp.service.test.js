@@ -105,7 +105,7 @@ describe('PDP Service - getEffectivePermissions', () => {
       expect(permissions).not.toContain('delete:project');
     });
 
-    test('should grant permission with no required attributes', async () => {
+    test('should deny permissions with no configured grant rules', async () => {
       _clearCache(); // Clear cache to ensure fresh load
 
       // Mock empty requirements for a permission
@@ -113,6 +113,18 @@ describe('PDP Service - getEffectivePermissions', () => {
         'read:public': [] // no attributes required
       });
 
+      roleAttributesRepo.getAttributesByRole.mockResolvedValue([]);
+      userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
+
+      const permissions = await getEffectivePermissions(1, []);
+
+      expect(permissions).not.toContain('read:public');
+    });
+
+    test('should grant only an explicitly empty public rule', async () => {
+      permissionAttributesRepo.getAllPermissionRequirements.mockResolvedValue({
+        'read:public': [[]]
+      });
       roleAttributesRepo.getAttributesByRole.mockResolvedValue([]);
       userAttributesRepo.getAttributesByUser.mockResolvedValue([]);
 

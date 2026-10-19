@@ -14,13 +14,14 @@ const projectRouter = require('./routes/project.router');
 const accessControlRouter = require('./routes/accessControl.router');
 const startServer = require('./utils/startServer');
 const createTokenBucketRateLimiter = require('./middleware/rateLimit.middleware');
+const createSessionConfig = require('./config/session.config');
 const helmet = require('helmet');
 
 const app = express();
 app.use(helmet()); // Security headers
 const apiRateLimiter = createTokenBucketRateLimiter(['/api/'], {
   capacity: 150,
-  refillRate: 4
+  refillRate: 150 / (15 * 60)
 });
 
 // Middleware
@@ -28,27 +29,11 @@ app.use(apiRateLimiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Session configuration with Redis store
-// Falls back to memory store if Redis is unavailable (development)
-const sessionConfig = {
-  secret: process.env.SESSION_SECRET || 'change_this_secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: process.env.NODE_ENV === 'production', // HTTPS only in production
-    httpOnly: true, // Prevent XSS attacks
-    sameSite: 'strict', // CSRF protection
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
-  }
-};
-
-// Add Redis store if client is connected
-if (redisClient.isOpen || redisClient.isReady) {
-  console.log('DEBUG: RedisStore type:', typeof RedisStore, RedisStore && RedisStore.name);
-  sessionConfig.store = new RedisStore({ client: redisClient });
+const sessionConfig = createSessionConfig(process.env, redisClient, RedisStore);
+if (sessionConfig.store) {
   console.log('Session store: Redis');
 } else {
-  console.warn('Session store: In-memory (Redis not available)');
+  console.warn('Session store: In-memory (development/test only)');
 }
 
 app.use(session(sessionConfig));

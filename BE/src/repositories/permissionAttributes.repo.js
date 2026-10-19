@@ -25,6 +25,7 @@ async function getAllPermissionRequirements() {
 
   const requirements = {};
   results.forEach(row => {
+    if (!row.name && row.permission_resource !== 'public') return;
     const key = `${row.action}:${row.permission_resource}`;
     if (!requirements[key]) requirements[key] = new Map();
     const groupId = row.grant_group === undefined || row.grant_group === null
@@ -63,6 +64,13 @@ async function replaceGrantGroups(permissionId, groups) {
     }
     return normalized;
   });
+
+  if (groups.some(group => group.length === 0)) {
+    const permission = await knex('permissions').where({ id: permissionId }).first();
+    if (!permission || permission.resource !== 'public') {
+      throw new TypeError('Empty grant rules are only allowed for public permissions');
+    }
+  }
 
   const requestedIds = [...new Set(normalizedGroups.flat())];
   const knownAttributes = requestedIds.length

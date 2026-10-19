@@ -26,7 +26,7 @@ function buildCompositeKey(name, resource, resourceId) {
 
 function normalizeGrantGroups(requirements) {
     if (!Array.isArray(requirements) || requirements.length === 0) {
-        return [[]];
+        return [];
     }
     return Array.isArray(requirements[0]) ? requirements : [requirements];
 }

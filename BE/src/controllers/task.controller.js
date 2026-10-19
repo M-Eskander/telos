@@ -13,6 +13,9 @@ async function create(req, res, next) {
     if (error.code === 'INVALID_PARENT_TASK') {
       return res.status(400).json({ success: false, message: error.message });
     }
+    if (error.code === 'INVALID_TASK') {
+      return res.status(400).json({ success: false, message: error.message });
+    }
     next(error);
   }
 }
@@ -37,6 +40,9 @@ async function update(req, res, next) {
     return res.status(200).json({ success: true, data: updatedTask });
   } catch (error) {
     if (error.code === 'INVALID_ASSIGNEES') {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+    if (error.code === 'INVALID_TASK') {
       return res.status(400).json({ success: false, message: error.message });
     }
     next(error);

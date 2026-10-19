@@ -167,6 +167,25 @@ describe('Task Service Unit Tests', () => {
       expect(database.projects[0].progress).toBe(0);
     });
 
+    test.each([
+      [{ title: '  ' }, /title/],
+      [{ title: 'Task', status: 'blocked' }, /status/],
+      [{ title: 'Task', priority: 'impossible' }, /priority/],
+      [{ title: 'Task', progress: 101 }, /progress/],
+      [{ title: 'Task', progress: -1 }, /progress/],
+      [{ title: 'Task', weight: 0 }, /weight/],
+      [{ title: 'Task', weight: Number.POSITIVE_INFINITY }, /weight/],
+      [{ title: 'Task', start_date: '2026-02-30' }, /start_date/],
+      [{ title: 'Task', start_date: '2026-06-02', end_date: '2026-06-01' }, /end_date/],
+      [{ title: 'Task', parent_task_id: 0 }, /parent_task_id/]
+    ])('rejects invalid task data %#', async (data, message) => {
+      useTransaction({ projects: [{ id: 1, progress: 0 }] });
+
+      await expect(taskService.createTask(1, 7, data))
+        .rejects.toMatchObject({ code: 'INVALID_TASK', message });
+      expect(knex.transaction).not.toHaveBeenCalled();
+    });
+
     test('recalculates parent and project progress when creating a subtask', async () => {
       const { database } = useTransaction({
         tasks: [
@@ -374,14 +393,71 @@ describe('Task Service Unit Tests', () => {
       expect(database.tasks.find(task => task.id === 1).progress).toBe(100);
       expect(database.projects[0].progress).toBe(100);
     });
+
+    test('validates updates against current task dates and data ranges', async () => {
+      const { database, queryCalls } = useTransaction({
+        tasks: [{
+          id: 1,
+          project_id: 4,
+          parent_task_id: null,
+          title: 'Existing',
+          start_date: '2026-06-01',
+          end_date: '2026-06-10',
+          progress: 50,
+          weight: 1
+        }],
+        projects: [{ id: 4, progress: 50 }]
+      });
+
+      await expect(taskService.updateTask(1, { end_date: '2026-05-31' }))
+        .rejects.toMatchObject({ code: 'INVALID_TASK', message: /end_date/ });
+      await expect(taskService.updateTask(1, { progress: 101 }))
+        .rejects.toMatchObject({ code: 'INVALID_TASK', message: /progress/ });
+      expect(database.tasks[0].end_date).toBe('2026-06-10');
+      expect(queryCalls.filter(call => call.action === 'update')).toEqual([]);
+    });
   });
 
   describe('deleteTask', () => {
-    test('delegates task deletion to the repository and returns its result', async () => {
-      taskRepository.remove.mockResolvedValue(1);
+    test('deletes a root task and recalculates project progress in the transaction', async () => {
+      const { database } = useTransaction({
+        tasks: [{ id: 12, project_id: 3, parent_task_id: null, progress: 80, weight: 1 }],
+        projects: [{ id: 3, progress: 80 }]
+      });
 
       await expect(taskService.deleteTask(12)).resolves.toBe(1);
-      expect(taskRepository.remove).toHaveBeenCalledWith(12);
+      expect(database.tasks).toEqual([]);
+      expect(database.projects[0].progress).toBe(0);
+      expect(taskRepository.remove).not.toHaveBeenCalled();
+    });
+
+    test('deletes a subtask and recalculates its parent and project', async () => {
+      const { database } = useTransaction({
+        tasks: [
+          { id: 1, project_id: 3, parent_task_id: null, progress: 90, weight: 1 },
+          { id: 12, project_id: 3, parent_task_id: 1, progress: 90, weight: 1 },
+          { id: 13, project_id: 3, parent_task_id: 1, progress: 30, weight: 1 }
+        ],
+        projects: [{ id: 3, progress: 90 }]
+      });
+
+      await expect(taskService.deleteTask(13, 3)).resolves.toBe(1);
+      expect(database.tasks.find(task => task.id === 1).progress).toBe(90);
+      expect(database.projects[0].progress).toBe(90);
+      await expect(taskService.deleteTask(12, 3)).resolves.toBe(1);
+      expect(database.tasks.find(task => task.id === 1).progress).toBe(0);
+      expect(database.projects[0].progress).toBe(0);
+    });
+
+    test('does not delete a task outside the requested project', async () => {
+      const { database } = useTransaction({
+        tasks: [{ id: 12, project_id: 3, parent_task_id: null, progress: 80, weight: 1 }],
+        projects: [{ id: 3, progress: 80 }]
+      });
+
+      await expect(taskService.deleteTask(12, 4)).resolves.toBe(0);
+      expect(database.tasks).toHaveLength(1);
+      expect(database.projects[0].progress).toBe(80);
     });
   });
 
@@ -452,7 +528,7 @@ describe('Task Service Unit Tests', () => {
       expect(database.projects[0].progress).toBe(51);
     });
 
-    test('does nothing for a missing parent id or a parent with no subtasks', async () => {
+    test('clears empty parent progress and resets its project rollup', async () => {
       const { database, queryCalls, trx } = useTransaction({
         tasks: [{ id: 1, project_id: 8, parent_task_id: null, progress: 20, weight: 1 }]
       });
@@ -460,8 +536,13 @@ describe('Task Service Unit Tests', () => {
       await taskService.recalculateParentProgress(null, trx);
       await taskService.recalculateParentProgress(1, trx);
 
-      expect(database.tasks[0].progress).toBe(20);
-      expect(queryCalls).toEqual([]);
+      expect(database.tasks[0].progress).toBe(0);
+      expect(queryCalls).toContainEqual({
+        tableName: 'tasks',
+        action: 'update',
+        filters: [['id', 1]],
+        updates: { progress: 0 }
+      });
     });
 
     test('does not update project progress when the parent task record is missing', async () => {

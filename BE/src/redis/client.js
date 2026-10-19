@@ -61,12 +61,6 @@ client.on('ready', () => console.log('Redis: Ready to use'));
 client.on('error', (err) => console.error('Redis: Connection Error', err));
 client.on('end', () => console.log('Redis: Connection closed'));
 
-// Connect to Redis (non-blocking)
-client.connect().catch((err) => {
-  console.error('Failed to connect to Redis:', err.message);
-  console.warn('Sessions will use in-memory store (development mode)');
-});
-
 // Handle graceful shutdown in non-test environments
 if (process.env.NODE_ENV !== 'test') {
   process.on('SIGINT', async () => {

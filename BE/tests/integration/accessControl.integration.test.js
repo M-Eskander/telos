@@ -415,11 +415,21 @@ describe('Access-control administration API', () => {
     expect(unknownAttribute.status).toBe(400);
     expect(unknownAttribute.body.message).toMatch(/attributes do not exist/);
 
-    const publicGrant = await ownerAgent.put(grantPath).send({ alternatives: [[]] });
+    const accidentalPublicGrant = await ownerAgent.put(grantPath).send({ alternatives: [[]] });
+    expect(accidentalPublicGrant.status).toBe(400);
+    expect(accidentalPublicGrant.body.message).toMatch(/only allowed for public permissions/);
+    const publicPermission = await ownerAgent.post('/api/admin/permissions').send({
+      action: 'read',
+      resource: 'public'
+    });
+    expect(publicPermission.status).toBe(201);
+    const publicGrant = await ownerAgent.put(
+      `/api/admin/permissions/${publicPermission.body.permission.id}/grants`
+    ).send({ alternatives: [[]] });
     expect(publicGrant.status).toBe(200);
     const publicPermissions = await ownerAgent.get('/api/admin/permissions');
     expect(publicPermissions.body.permissions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: permission.body.permission.id, alternatives: [[]] })
+      expect.objectContaining({ id: publicPermission.body.permission.id, alternatives: [[]] })
     ]));
     const denyAll = await ownerAgent.put(grantPath).send({ alternatives: [] });
     expect(denyAll.status).toBe(200);
@@ -531,6 +541,23 @@ describe('Access-control administration API', () => {
     const invalidParent = await ownerAgent.post(`/api/projects/${projectId}/tasks`)
       .send({ title: 'Invalid child', parent_task_id: 99999 });
     expect(invalidParent.status).toBe(400);
+    const invalidTaskInputs = [
+      { title: 'Invalid status', status: 'blocked' },
+      { title: 'Invalid progress', progress: 101 },
+      { title: 'Invalid weight', weight: 0 },
+      { title: 'Invalid dates', start_date: '2026-06-02', end_date: '2026-06-01' }
+    ];
+    for (const invalidInput of invalidTaskInputs) {
+      const invalidTask = await ownerAgent.post(`/api/projects/${projectId}/tasks`)
+        .send(invalidInput);
+      expect(invalidTask.status).toBe(400);
+      expect(invalidTask.body.success).toBe(false);
+    }
+    const invalidTaskUpdate = await ownerAgent.patch(
+      `/api/projects/${projectId}/tasks/${task.body.data.id}`
+    ).send({ progress: -1 });
+    expect(invalidTaskUpdate.status).toBe(400);
+    expect((await testDb('tasks').where({ id: task.body.data.id }).first()).progress).toBe(100);
     const invalidAssignees = await ownerAgent.post(`/api/projects/${projectId}/tasks`)
       .send({ title: 'Duplicate assignees', assignee_ids: [assignee.body.person.id, assignee.body.person.id] });
     expect(invalidAssignees.status).toBe(400);
@@ -547,6 +574,11 @@ describe('Access-control administration API', () => {
       `/api/projects/${projectId}/tasks/${child.body.data.id}`
     );
     expect(deleteChild.status).toBe(200);
+    expect((await testDb('tasks').where({ id: task.body.data.id }).first()).progress).toBe(0);
+    expect((await testDb('projects').where({ id: projectId }).first()).progress).toBe(0);
+    const deleteRoot = await ownerAgent.delete(`/api/projects/${projectId}/tasks/${task.body.data.id}`);
+    expect(deleteRoot.status).toBe(200);
+    expect((await testDb('projects').where({ id: projectId }).first()).progress).toBe(0);
     expect((await ownerAgent.delete(`/api/projects/${projectId}/tasks/99999`)).status).toBe(404);
     expect((await ownerAgent.delete('/api/projects/99999')).status).toBe(404);
     expect((await ownerAgent.patch('/api/projects/99999').send({ name: 'Missing' })).status).toBe(404);

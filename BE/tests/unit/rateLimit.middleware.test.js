@@ -33,4 +33,33 @@ describe('token bucket rate limiter', () => {
     expect((await request(app).get('/api/authenticate')).status).toBe(200);
     expect((await request(app).get('/api/authenticate')).status).toBe(200);
   });
+
+  test('expires inactive buckets and enforces the configured memory bound', async () => {
+    const originalNow = Date.now;
+    let now = 1000;
+    Date.now = () => now;
+    try {
+      const limiter = createTokenBucketRateLimiter(['/api/limited'], {
+        capacity: 1,
+        refillRate: 1,
+        maxBuckets: 2,
+        keyGenerator: req => req.headers['x-client']
+      });
+      const app = express();
+      app.use(limiter);
+      app.get('/api/limited', (req, res) => res.sendStatus(200));
+
+      expect((await request(app).get('/api/limited').set('x-client', 'one')).status).toBe(200);
+      expect((await request(app).get('/api/limited').set('x-client', 'two')).status).toBe(200);
+      expect(limiter.bucketCount()).toBe(2);
+      expect((await request(app).get('/api/limited').set('x-client', 'three')).status).toBe(503);
+      expect(limiter.bucketCount()).toBe(2);
+
+      now += 1001;
+      expect((await request(app).get('/api/limited').set('x-client', 'three')).status).toBe(200);
+      expect(limiter.bucketCount()).toBe(1);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
 });
