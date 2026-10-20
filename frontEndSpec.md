@@ -493,8 +493,6 @@ Create accepts:
 {
   "title": "Build inventory screen",
   "description": "Implement list and detail states",
-  "status": "in_progress",
-  "priority": "high",
   "progress": 25,
   "weight": 2,
   "parent_task_id": null,
@@ -510,13 +508,13 @@ Fields:
 |---|---|
 | `title` | Required non-empty string. |
 | `description` | Optional string or `null`; defaults to `null`. |
-| `status` | `todo`, `in_progress`, or `done`; defaults to `todo`. |
-| `priority` | `low`, `medium`, `high`, or `critical`; defaults to `medium`. |
-| `progress` | Integer from 0 through 100; defaults to `0`. |
-| `weight` | Positive finite number; defaults to `1`. Used in parent/project progress. |
+| `progress` | Integer from 0 through 100; defaults to `0`. Leaf tasks only. |
+| `weight` | Number from 0 through 12; defaults to `1`. Leaf tasks only. |
 | `parent_task_id` | Optional positive task ID or `null`; parent must exist in this project. |
 | `start_date`, `end_date` | Optional valid `YYYY-MM-DD` or `null`; end cannot precede start. |
 | `assignee_ids` | Optional array of unique positive IDs; every person must be active and a project member. |
+
+`status` and `priority` are not accepted: they are derived. See below.
 
 `PATCH` accepts the editable task fields, including `assignee_ids`. Omitted
 fields remain unchanged. To clear task dates, send `null`; to clear assignees,
@@ -527,24 +525,43 @@ The backend service validates the task domain before writing, but does not
 guarantee every database installation has matching SQL check constraints. The
 frontend should validate before submission and still handle a `400`.
 
+### Derivation rules
+
+Weight and progress are the only values a user sets. Priority and status are
+always derived, so the model cannot contradict itself.
+
+| Rule | Behaviour |
+|---|---|
+| Weight to priority | `0-3` low, `3-6` medium, `6-9` high, `9-12` critical. |
+| Progress to status | `0` to do, `1-99` in progress, `100` done. |
+| Parent weight | The average of its children's weights. |
+| Parent progress | The weighted average of its children's progress. |
+| Parent priority | The band its derived weight falls into. |
+| Parent status | Derived from its derived progress. |
+| Project progress | The weighted average of the root tasks' progress. |
+
+A task with subtasks is never edited directly: its weight and progress are
+calculated from them, and a `PATCH` that tries to set them returns `400`
+(`Progress for this task is calculated from its subtasks`). Subtasks can have
+subtasks of their own, and the rules apply at every level.
+
 ### Tree responses and progress
 
-`GET /api/projects/:projectId/tasks` returns root tasks with a `subtasks` array.
-The current repository response nests one subtask level; do not assume a
-recursive hierarchy in that response. The timeline is a flat list, with
-`parent_task_id` identifying a subtask's parent.
+`GET /api/projects/:projectId/tasks` returns root tasks with a `subtasks`
+array, and every subtask carries its own `subtasks` array, so the response is a
+recursive tree. The timeline is a flat list, with `parent_task_id` identifying
+a subtask's parent.
 
 Task data includes stored fields such as `id`, `project_id`, `title`,
 `description`, `status`, `priority`, `parent_task_id`, `progress`, `weight`,
 `start_date`, `end_date`, `created_by`, and `created_at`. Task reads add
-`assignees` with active person fields (`id`, `name`, `email`); root task reads
-also include `subtasks`.
+`assignees` with active person fields (`id`, `name`, `email`).
 
-Parent progress is calculated as the weighted average of its subtasks; project
-progress is the weighted average of root-task progress. A task update/create or
-delete recalculates the relevant parent and project progress. Deleting the last
-subtask resets its parent progress to zero. Treat calculated progress as
-server-owned and refresh the task/project after a mutation.
+A task update, create or delete recalculates every derived value in the
+project, so the parents and the project progress stay correct. Deleting the
+last subtask resets its parent back to an empty task of its own. Treat
+calculated values as server-owned and refresh the task/project after a
+mutation.
 
 ### Timeline endpoint
 

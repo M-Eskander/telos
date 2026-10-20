@@ -1,53 +1,109 @@
 const taskRepo = require('../repositories/task.repo');
 const knex = require('../config/knex');
-const TASK_STATUSES = new Set(['todo', 'in_progress', 'done']);
-const TASK_PRIORITIES = new Set(['low', 'medium', 'high', 'critical']);
+const { isValidWeight, WEIGHT_MIN, WEIGHT_MAX } = require('../config/taskDerivation');
+const {
+  DEFAULT_WEIGHT,
+  normalizeWeight,
+  buildTaskTree,
+  deriveTree,
+  flattenDerived,
+  projectProgress
+} = require('./taskDerivation.service');
 
 function invalidTask(message) {
   const error = new TypeError(message);
   error.code = 'INVALID_TASK';
-  return error;
+  throw error;
 }
 
 function taskAccessError(code, message) {
   const error = new Error(message);
   error.code = code;
-  return error;
+  throw error;
 }
 
 function isAssignedTo(task, userId) {
   return (task.assignees || []).some(assignee => Number(assignee.id) === Number(userId));
 }
 
-// A member with view_own:task only receives assigned work. Assigned subtasks
-// are promoted to top-level rows when their parent is not assigned, so the
-// response never discloses an unassigned task.
+// A member with view_own:task only receives assigned work.
+//
+// The whole tree is walked so any depth is supported. Only assigned tasks are
+// returned. An assigned task keeps its place under the closest assigned
+// ancestor; when no assigned ancestor exists it is promoted to a top-level row
+// so the response never discloses a task the person is not working on.
 function filterTasksForAssignee(tasks, userId) {
-  const filtered = [];
-  for (const task of tasks) {
-    const taskAssigned = isAssignedTo(task, userId);
-    const assignedSubtasks = (task.subtasks || []).filter(subtask => isAssignedTo(subtask, userId));
+  const nodes = new Map();
+  const depthOf = new Map();
 
-    if (taskAssigned) {
-      const hiddenSubtasks = (task.subtasks || []).length - assignedSubtasks.length;
-      filtered.push({
-        ...task,
-        subtasks: assignedSubtasks,
-        ...(hiddenSubtasks > 0 ? { has_hidden_subtasks: true } : {})
-      });
-      continue;
+  const collect = (list, parentId, depth) => {
+    for (const node of list) {
+      const entry = { ...node, subtasks: [] };
+      nodes.set(node.id, entry);
+      depthOf.set(node.id, depth);
+      collect(node.subtasks || [], node.id, depth + 1);
     }
+  };
+  collect(tasks, null, 0);
 
-    for (const subtask of assignedSubtasks) {
-      filtered.push({
-        ...subtask,
-        parent_task_id: null,
+  const assigned = [...nodes.values()].filter(node => isAssignedTo(node, userId));
+  if (assigned.length === 0) return [];
+
+  const parentIdOf = new Map();
+  const collectParents = (list, parentId) => {
+    for (const node of list) {
+      parentIdOf.set(node.id, parentId);
+      collectParents(node.subtasks || [], node.id);
+    }
+  };
+  collectParents(tasks, null);
+
+  const nearestAssignedAncestor = (node) => {
+    let current = parentIdOf.get(node.id);
+    while (current) {
+      if (isAssignedTo(nodes.get(current), userId)) return current;
+      current = parentIdOf.get(current);
+    }
+    return null;
+  };
+
+  const entries = new Map();
+  const roots = [];
+  const ordered = [...assigned].sort((a, b) => depthOf.get(a.id) - depthOf.get(b.id));
+
+  for (const node of ordered) {
+    const ancestorId = nearestAssignedAncestor(node);
+    const parentEntry = ancestorId ? entries.get(ancestorId) : null;
+    const entry = parentEntry
+      ? { ...node, subtasks: [] }
+      : {
+        ...node,
         subtasks: [],
-        is_subtask: true
-      });
-    }
+        parent_task_id: null,
+        ...(parentIdOf.get(node.id) ? { is_subtask: true } : {})
+      };
+    entries.set(node.id, entry);
+    if (parentEntry) parentEntry.subtasks.push(entry);
+    else roots.push(entry);
   }
-  return filtered;
+
+  // Flag tasks that are hiding unassigned children.
+  const realChildCount = new Map();
+  const countChildren = (list) => {
+    for (const node of list) {
+      const parent = parentIdOf.get(node.id);
+      if (parent) realChildCount.set(parent, (realChildCount.get(parent) || 0) + 1);
+      countChildren(node.subtasks || []);
+    }
+  };
+  countChildren(tasks);
+
+  for (const [id, entry] of entries) {
+    const hidden = (realChildCount.get(id) || 0) - entry.subtasks.length;
+    if (hidden > 0) entry.has_hidden_subtasks = true;
+  }
+
+  return roots;
 }
 
 function filterTimelineForAssignee(tasks, userId) {
@@ -77,21 +133,12 @@ function validateTaskData(data, existingTask = null) {
       typeof data.description !== 'string') {
     throw invalidTask('Task description must be a string or null');
   }
-  if (data.status !== undefined &&
-      (typeof data.status !== 'string' || !TASK_STATUSES.has(data.status))) {
-    throw invalidTask('Task status must be todo, in_progress, or done');
-  }
-  if (data.priority !== undefined &&
-      (typeof data.priority !== 'string' || !TASK_PRIORITIES.has(data.priority))) {
-    throw invalidTask('Task priority must be low, medium, high, or critical');
-  }
   if (data.progress !== undefined &&
       (!Number.isInteger(data.progress) || data.progress < 0 || data.progress > 100)) {
     throw invalidTask('Task progress must be an integer from 0 to 100');
   }
-  if (data.weight !== undefined &&
-      (typeof data.weight !== 'number' || !Number.isFinite(data.weight) || data.weight <= 0)) {
-    throw invalidTask('Task weight must be a positive finite number');
+  if (data.weight !== undefined && !isValidWeight(data.weight)) {
+    throw invalidTask(`Task weight must be a number from ${WEIGHT_MIN} to ${WEIGHT_MAX}`);
   }
   if (data.parent_task_id !== undefined && data.parent_task_id !== null &&
       (!Number.isInteger(Number(data.parent_task_id)) || Number(data.parent_task_id) < 1)) {
@@ -147,6 +194,11 @@ async function getActiveAssigneeIds(trx, projectId, assigneeIds) {
   return ids;
 }
 
+async function countChildren(trx, taskId) {
+  const children = await trx('tasks').where({ parent_task_id: taskId }).select('id');
+  return children.length;
+}
+
 async function createTask(projectId, userId, data) {
   validateTaskData(data);
   const task = await knex.transaction(async trx => {
@@ -167,11 +219,11 @@ async function createTask(projectId, userId, data) {
       project_id: projectId,
       title: data.title,
       description: data.description || null,
-      status: data.status || 'todo',
-      priority: data.priority || 'medium',
+      status: 'todo',
+      priority: 'low',
       parent_task_id: data.parent_task_id || null,
       progress: data.progress || 0,
-      weight: data.weight || 1.00,
+      weight: data.weight === undefined ? DEFAULT_WEIGHT : normalizeWeight(data.weight),
       start_date: data.start_date || null,
       end_date: data.end_date || null,
       created_by: userId
@@ -185,12 +237,8 @@ async function createTask(projectId, userId, data) {
       await trx('task_assignment').insert(records);
     }
 
-    // Trigger rollup calculation
-    if (newTask.parent_task_id) {
-      await recalculateParentProgress(newTask.parent_task_id, trx);
-    } else {
-      await recalculateProjectProgress(projectId, trx);
-    }
+    // Roll every derived value up through the tree.
+    await recalculateProject(projectId, trx);
 
     return newTask;
   });
@@ -223,6 +271,9 @@ async function updateTask(id, data, projectId = null, options = {}) {
       return null;
     }
 
+    const childCount = await countChildren(trx, task.id);
+    const hasChildren = childCount > 0;
+
     if (!canManageTasks) {
       if (!options.userId) {
         throw taskAccessError('TASK_NOT_ASSIGNED', 'You can only update tasks assigned to you');
@@ -239,25 +290,30 @@ async function updateTask(id, data, projectId = null, options = {}) {
       if (Object.keys(data).some(key => key !== 'progress')) {
         throw taskAccessError('TASK_PROGRESS_ONLY', 'You can only update progress for this task');
       }
-      const subtasks = await trx('tasks')
-        .where({ parent_task_id: task.id })
-        .count({ count: '*' })
-        .first();
-      if (Number(subtasks.count) > 0) {
+    }
+
+    validateTaskData(data, task);
+
+    // A task with subtasks is fully derived: its weight, progress, priority and
+    // status come from them, so they cannot be edited directly.
+    if (hasChildren) {
+      if (data.progress !== undefined) {
         throw taskAccessError(
           'TASK_PROGRESS_CALCULATED',
           'Progress for this task is calculated from its subtasks'
         );
       }
+      if (data.weight !== undefined) {
+        throw taskAccessError(
+          'TASK_WEIGHT_CALCULATED',
+          'Weight for this task is calculated from its subtasks'
+        );
+      }
     }
-
-    validateTaskData(data, task);
 
     const allowedUpdates = {
       title: data.title,
       description: data.description,
-      status: data.status,
-      priority: data.priority,
       progress: data.progress,
       weight: data.weight,
       start_date: data.start_date,
@@ -281,12 +337,8 @@ async function updateTask(id, data, projectId = null, options = {}) {
       }
     }
 
-    // Trigger rollup calculation after update
-    if (task.parent_task_id) {
-      await recalculateParentProgress(task.parent_task_id, trx);
-    } else {
-      await recalculateProjectProgress(task.project_id, trx);
-    }
+    // Roll every derived value up through the tree.
+    await recalculateProject(task.project_id, trx);
 
     return trx('tasks').where({ id }).first();
   });
@@ -294,6 +346,7 @@ async function updateTask(id, data, projectId = null, options = {}) {
   if (!updatedTask) return null;
   return taskRepo.findById(updatedTask.id);
 }
+
 async function deleteTask(id, projectId = null) {
   return knex.transaction(async trx => {
     const taskQuery = trx('tasks').where({ id });
@@ -305,78 +358,58 @@ async function deleteTask(id, projectId = null) {
 
     const deleted = await trx('tasks').where({ id: task.id }).del();
     if (!deleted) return 0;
+
+    // A parent that just lost its last subtask becomes a leaf again, so it
+    // goes back to being an empty task of its own.
     if (task.parent_task_id) {
-      await recalculateParentProgress(task.parent_task_id, trx);
-    } else {
-      await recalculateProjectProgress(task.project_id, trx);
+      const remainingChildren = await countChildren(trx, task.parent_task_id);
+      if (remainingChildren === 0) {
+        await trx('tasks').where({ id: task.parent_task_id }).update({
+          progress: 0,
+          weight: DEFAULT_WEIGHT
+        });
+      }
     }
+
+    await recalculateProject(task.project_id, trx);
     return deleted;
   });
 }
 
-// Helper to recalculate and update parent task progress based on its subtasks
-async function recalculateParentProgress(parentTaskId, trx) {
-  if (!parentTaskId) return;
-
-  const subtasks = await trx('tasks').where({ parent_task_id: parentTaskId });
-  if (subtasks.length === 0) {
-    await trx('tasks').where({ id: parentTaskId }).update({ progress: 0 });
-    const parentTask = await trx('tasks').where({ id: parentTaskId }).first();
-    if (parentTask && parentTask.parent_task_id) {
-      await recalculateParentProgress(parentTask.parent_task_id, trx);
-    } else if (parentTask) {
-      await recalculateProjectProgress(parentTask.project_id, trx);
-    }
-    return;
-  }
-
-  let totalWeight = 0;
-  let weightedProgressSum = 0;
-
-  for (const sub of subtasks) {
-    const weight = Number(sub.weight) || 1;
-    const progress = Number(sub.progress) || 0;
-    totalWeight += weight;
-    weightedProgressSum += progress * weight;
-  }
-
-  const newParentProgress = totalWeight > 0 ? Math.round(weightedProgressSum / totalWeight) : 0;
-
-  // Update parent task progress
-  await trx('tasks').where({ id: parentTaskId }).update({ progress: newParentProgress });
-
-  // Fetch parent task to see if it has its own parent (multi-level support)
-  const parentTask = await trx('tasks').where({ id: parentTaskId }).first();
-  if (parentTask && parentTask.parent_task_id) {
-    await recalculateParentProgress(parentTask.parent_task_id, trx);
-  } else if (parentTask) {
-    // If it's a root/parent task, update the project progress
-    await recalculateProjectProgress(parentTask.project_id, trx);
-  }
-}
-
-// Helper to recalculate and update overall project progress
-async function recalculateProjectProgress(projectId, trx) {
-  // Fetch all root tasks (tasks without parents) for the project
-  const rootTasks = await trx('tasks').where({ project_id: projectId, parent_task_id: null });
-  if (rootTasks.length === 0) {
+// Recalculates every derived value in a project: task weight, priority,
+// status and progress, plus the project progress.
+async function recalculateProject(projectId, trx) {
+  const tasks = await trx('tasks').where({ project_id: projectId }).select('*');
+  if (tasks.length === 0) {
     await trx('projects').where({ id: projectId }).update({ progress: 0 });
     return;
   }
+  const tree = buildTaskTree(tasks);
+  const derivedRoots = deriveTree(tree);
+  const derived = flattenDerived(derivedRoots);
 
-  let totalWeight = 0;
-  let weightedProgressSum = 0;
-
-  for (const task of rootTasks) {
-    const weight = Number(task.weight) || 1;
-    const progress = Number(task.progress) || 0;
-    totalWeight += weight;
-    weightedProgressSum += progress * weight;
+  for (const node of derived) {
+    const weight = normalizeWeight(node.derivedWeight);
+    const progress = node.derivedProgress;
+    const priority = node.derivedPriority;
+    const status = node.derivedStatus;
+    const changed =
+      Number(node.weight) !== weight ||
+      Number(node.progress) !== progress ||
+      node.priority !== priority ||
+      node.status !== status;
+    if (!changed) continue;
+    await trx('tasks').where({ id: node.id }).update({
+      weight,
+      progress,
+      priority,
+      status
+    });
   }
 
-  const newProjectProgress = totalWeight > 0 ? Math.round(weightedProgressSum / totalWeight) : 0;
-
-  await trx('projects').where({ id: projectId }).update({ progress: newProjectProgress });
+  await trx('projects').where({ id: projectId }).update({
+    progress: projectProgress(derivedRoots)
+  });
 }
 
 module.exports = {
@@ -385,6 +418,5 @@ module.exports = {
   getProjectTimeline,
   updateTask,
   deleteTask,
-  recalculateParentProgress,
-  recalculateProjectProgress
+  recalculateProject
 };

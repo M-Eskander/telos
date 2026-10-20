@@ -540,8 +540,8 @@ describe('Access-control administration API', () => {
     ]);
     const clearedRepositoryTask = await taskRepository.setAssignees(repositoryTask.id, []);
     expect(clearedRepositoryTask.assignees).toEqual([]);
-    const updatedRepositoryTask = await taskRepository.update(repositoryTask.id, { priority: 'high' });
-    expect(updatedRepositoryTask.priority).toBe('high');
+    const updatedRepositoryTask = await taskRepository.update(repositoryTask.id, { weight: 5 });
+    expect(updatedRepositoryTask.weight).toBe(5);
     expect(await taskRepository.remove(repositoryTask.id)).toBe(1);
     expect(await taskRepository.remove(repositoryTask.id)).toBe(0);
 
@@ -549,9 +549,9 @@ describe('Access-control administration API', () => {
       .send({ title: 'Invalid child', parent_task_id: 99999 });
     expect(invalidParent.status).toBe(400);
     const invalidTaskInputs = [
-      { title: 'Invalid status', status: 'blocked' },
       { title: 'Invalid progress', progress: 101 },
-      { title: 'Invalid weight', weight: 0 },
+      { title: 'Invalid weight', weight: 13 },
+      { title: 'Negative weight', weight: -1 },
       { title: 'Invalid dates', start_date: '2026-06-02', end_date: '2026-06-01' }
     ];
     for (const invalidInput of invalidTaskInputs) {

@@ -122,8 +122,9 @@ describe('Task Service Unit Tests', () => {
         created_by: 7,
         title: 'Implement Physics Engine',
         description: 'Build the simulation core',
-        status: 'in_progress',
-        priority: 'high',
+        // Status and priority are always derived, never taken from the input.
+        status: 'todo',
+        priority: 'low',
         parent_task_id: null,
         progress: 0,
         weight: 3,
@@ -156,7 +157,7 @@ describe('Task Service Unit Tests', () => {
         title: 'Task',
         description: null,
         status: 'todo',
-        priority: 'medium',
+        priority: 'low',
         parent_task_id: null,
         progress: 0,
         weight: 1,
@@ -169,11 +170,10 @@ describe('Task Service Unit Tests', () => {
 
     test.each([
       [{ title: '  ' }, /title/],
-      [{ title: 'Task', status: 'blocked' }, /status/],
-      [{ title: 'Task', priority: 'impossible' }, /priority/],
       [{ title: 'Task', progress: 101 }, /progress/],
       [{ title: 'Task', progress: -1 }, /progress/],
-      [{ title: 'Task', weight: 0 }, /weight/],
+      [{ title: 'Task', weight: 13 }, /weight/],
+      [{ title: 'Task', weight: -1 }, /weight/],
       [{ title: 'Task', weight: Number.POSITIVE_INFINITY }, /weight/],
       [{ title: 'Task', start_date: '2026-02-30' }, /start_date/],
       [{ title: 'Task', start_date: '2026-06-02', end_date: '2026-06-01' }, /end_date/],
@@ -328,7 +328,8 @@ describe('Task Service Unit Tests', () => {
       expect(result).toEqual({ id: 1, title: 'Updated' });
       expect(database.tasks[0]).toMatchObject({
         title: 'Updated',
-        status: 'done',
+        // Status follows the progress, it is never set by hand.
+        status: 'in_progress',
         progress: 80,
         weight: 2,
         description: 'Finished',
@@ -365,7 +366,11 @@ describe('Task Service Unit Tests', () => {
 
       expect(database.tasks[0].title).toBe('Keep');
       expect(database.task_assignment).toEqual([]);
-      expect(queryCalls.filter(call => call.tableName === 'tasks' && call.action === 'update')).toEqual([]);
+      // Only derived values are written; the task's own fields are untouched.
+      const taskUpdates = queryCalls.filter(call => call.tableName === 'tasks' && call.action === 'update');
+      taskUpdates.forEach(call => {
+        expect(Object.keys(call.updates).sort()).toEqual(['priority', 'progress', 'status', 'weight']);
+      });
       expect(database.projects[0].progress).toBe(30);
     });
 
@@ -472,44 +477,49 @@ describe('Task Service Unit Tests', () => {
         projects: [{ id: 8, progress: 0 }]
       });
 
-      await taskService.recalculateParentProgress(1, trx);
+      await taskService.recalculateProject(8, trx);
 
       expect(database.tasks.find(task => task.id === 1).progress).toBe(65);
       expect(database.projects[0].progress).toBe(65);
     });
 
-    test('defaults zero or null weights to one and null progress to zero', async () => {
+    test('derives a parent weight from the average of its children', async () => {
       const { database, trx } = useTransaction({
         tasks: [
-          { id: 1, project_id: 11, parent_task_id: null, progress: 0, weight: 0 },
-          { id: 2, project_id: 11, parent_task_id: 1, progress: 0, weight: 0 },
-          { id: 3, project_id: 11, parent_task_id: 1, progress: 100, weight: null },
-          { id: 4, project_id: 11, parent_task_id: null, progress: null, weight: 1 }
+          { id: 1, project_id: 11, parent_task_id: null, progress: 0, weight: 1 },
+          { id: 2, project_id: 11, parent_task_id: 1, progress: 100, weight: 2 },
+          { id: 3, project_id: 11, parent_task_id: 1, progress: 0, weight: 10 }
         ],
         projects: [{ id: 11, progress: 0 }]
       });
 
-      await taskService.recalculateParentProgress(1, trx);
+      await taskService.recalculateProject(11, trx);
 
-      expect(database.tasks.find(task => task.id === 1).progress).toBe(50);
-      expect(database.projects[0].progress).toBe(25);
+      const parent = database.tasks.find(task => task.id === 1);
+      expect(parent.weight).toBe(6);
+      expect(parent.priority).toBe('medium');
+      expect(parent.progress).toBe(17);
+      expect(parent.status).toBe('in_progress');
     });
 
-    test('returns zero when positive and negative weights cancel out', async () => {
+    test('defaults a missing leaf weight to one and a missing progress to zero', async () => {
       const { database, trx } = useTransaction({
         tasks: [
-          { id: 1, project_id: 13, parent_task_id: null, progress: 50, weight: 1 },
-          { id: 2, project_id: 13, parent_task_id: 1, progress: 25, weight: 1 },
-          { id: 3, project_id: 13, parent_task_id: 1, progress: 75, weight: -1 },
-          { id: 4, project_id: 13, parent_task_id: null, progress: 80, weight: -1 }
+          { id: 1, project_id: 12, parent_task_id: null, progress: null, weight: null },
+          { id: 2, project_id: 12, parent_task_id: null, progress: 100, weight: 2 }
         ],
-        projects: [{ id: 13, progress: 10 }]
+        projects: [{ id: 12, progress: 0 }]
       });
 
-      await taskService.recalculateParentProgress(1, trx);
+      await taskService.recalculateProject(12, trx);
 
-      expect(database.tasks.find(task => task.id === 1).progress).toBe(0);
-      expect(database.projects[0].progress).toBe(0);
+      const first = database.tasks.find(task => task.id === 1);
+      expect(first.weight).toBe(1);
+      expect(first.progress).toBe(0);
+      expect(first.status).toBe('todo');
+      expect(first.priority).toBe('low');
+      // The project averages its root tasks by weight.
+      expect(database.projects[0].progress).toBe(67);
     });
 
     test('rounds weighted progress to the nearest whole number', async () => {
@@ -522,39 +532,27 @@ describe('Task Service Unit Tests', () => {
         projects: [{ id: 14, progress: 0 }]
       });
 
-      await taskService.recalculateParentProgress(1, trx);
+      await taskService.recalculateProject(14, trx);
 
       expect(database.tasks.find(task => task.id === 1).progress).toBe(51);
       expect(database.projects[0].progress).toBe(51);
     });
 
-    test('clears empty parent progress and resets its project rollup', async () => {
-      const { database, queryCalls, trx } = useTransaction({
-        tasks: [{ id: 1, project_id: 8, parent_task_id: null, progress: 20, weight: 1 }]
-      });
-
-      await taskService.recalculateParentProgress(null, trx);
-      await taskService.recalculateParentProgress(1, trx);
-
-      expect(database.tasks[0].progress).toBe(0);
-      expect(queryCalls).toContainEqual({
-        tableName: 'tasks',
-        action: 'update',
-        filters: [['id', 1]],
-        updates: { progress: 0 }
-      });
-    });
-
-    test('does not update project progress when the parent task record is missing', async () => {
+    test('derives status from progress for every task', async () => {
       const { database, trx } = useTransaction({
-        tasks: [{ id: 2, project_id: 12, parent_task_id: 1, progress: 50, weight: 1 }],
-        projects: [{ id: 12, progress: 75 }]
+        tasks: [
+          { id: 1, project_id: 15, parent_task_id: null, progress: 0, weight: 1 },
+          { id: 2, project_id: 15, parent_task_id: null, progress: 40, weight: 1 },
+          { id: 3, project_id: 15, parent_task_id: null, progress: 100, weight: 1 }
+        ],
+        projects: [{ id: 15, progress: 0 }]
       });
 
-      await taskService.recalculateParentProgress(1, trx);
+      await taskService.recalculateProject(15, trx);
 
-      expect(database.tasks[0].progress).toBe(50);
-      expect(database.projects[0].progress).toBe(75);
+      expect(database.tasks.find(task => task.id === 1).status).toBe('todo');
+      expect(database.tasks.find(task => task.id === 2).status).toBe('in_progress');
+      expect(database.tasks.find(task => task.id === 3).status).toBe('done');
     });
 
     test('calculates weighted project progress using only root tasks', async () => {
@@ -568,20 +566,35 @@ describe('Task Service Unit Tests', () => {
         projects: [{ id: 9, progress: 0 }]
       });
 
-      await taskService.recalculateProjectProgress(9, trx);
+      await taskService.recalculateProject(9, trx);
 
-      expect(database.projects[0].progress).toBe(65);
+      // The first root takes its values from its child: weight 10, progress 100.
+      expect(database.tasks.find(task => task.id === 1).weight).toBe(10);
+      expect(database.projects[0].progress).toBe(95);
     });
 
-    test('resets project progress when the project has no root tasks', async () => {
+    test('resets project progress when the project has no tasks', async () => {
       const { database, trx } = useTransaction({
-        tasks: [{ id: 1, project_id: 10, parent_task_id: 5, progress: 50, weight: 1 }],
         projects: [{ id: 10, progress: 90 }]
       });
 
-      await taskService.recalculateProjectProgress(10, trx);
+      await taskService.recalculateProject(10, trx);
 
       expect(database.projects[0].progress).toBe(0);
+    });
+
+    test('treats a task with a missing parent as a root task', async () => {
+      const { database, trx } = useTransaction({
+        tasks: [
+          { id: 1, project_id: 16, parent_task_id: 999, progress: 50, weight: 1 }
+        ],
+        projects: [{ id: 16, progress: 0 }]
+      });
+
+      await taskService.recalculateProject(16, trx);
+
+      expect(database.tasks[0].progress).toBe(50);
+      expect(database.projects[0].progress).toBe(50);
     });
   });
 });

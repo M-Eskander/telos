@@ -1,20 +1,78 @@
 const knex = require('../config/knex');
 
+async function attachAssignees(tasks) {
+  if (tasks.length === 0) return tasks;
+  const assignments = await knex('task_assignment')
+    .join('users', 'task_assignment.user_id', 'users.id')
+    .whereIn('task_assignment.task_id', tasks.map(task => task.id))
+    .where('users.is_active', true)
+    .select(
+      'task_assignment.task_id as taskId',
+      'users.id',
+      'users.name',
+      'users.email'
+    );
+  const byTask = new Map();
+  for (const assignment of assignments) {
+    if (!byTask.has(assignment.taskId)) byTask.set(assignment.taskId, []);
+    byTask.get(assignment.taskId).push({
+      id: assignment.id,
+      name: assignment.name,
+      email: assignment.email
+    });
+  }
+  for (const task of tasks) {
+    task.assignees = byTask.get(task.id) || [];
+  }
+  return tasks;
+}
+
+// Builds a nested tree. Subtasks can have subtasks of their own, so the tree
+// is built from the full task list instead of a single level.
+function nestTasks(tasks) {
+  const nodes = new Map();
+  for (const task of tasks) {
+    nodes.set(task.id, { ...task, subtasks: [] });
+  }
+  const roots = [];
+  for (const node of nodes.values()) {
+    const parent = node.parent_task_id ? nodes.get(node.parent_task_id) : null;
+    if (parent) parent.subtasks.push(node);
+    else roots.push(node);
+  }
+  const byId = (a, b) => Number(a.id) - Number(b.id);
+  for (const node of nodes.values()) node.subtasks.sort(byId);
+  roots.sort(byId);
+  return roots;
+}
+
 async function findById(id) {
   const task = await knex('tasks').where({ id }).first();
   if (!task) return null;
-  
-  task.assignees = await knex('task_assignment')
-    .join('users', 'task_assignment.user_id', 'users.id')
-    .where('task_assignment.task_id', id)
-    .where('users.is_active', true)
-    .select('users.id', 'users.name', 'users.email');
 
-  task.subtasks = await knex('tasks')
-    .where({ parent_task_id: id })
-    .select('*');
+  const descendants = await knex('tasks').where({ project_id: task.project_id }).select('*');
+  const tree = nestTasks(descendants);
+  const find = (nodes) => {
+    for (const node of nodes) {
+      if (Number(node.id) === Number(id)) return node;
+      const found = find(node.subtasks || []);
+      if (found) return found;
+    }
+    return null;
+  };
+  const subtree = find(tree);
+  if (!subtree) return null;
 
-  return task;
+  await attachAssignees([subtree, ...collect(subtree)]);
+  return subtree;
+}
+
+function collect(node) {
+  const all = [];
+  for (const child of node.subtasks || []) {
+    all.push(child, ...collect(child));
+  }
+  return all;
 }
 
 async function create(taskData) {
@@ -23,31 +81,10 @@ async function create(taskData) {
 }
 
 async function findByProject(projectId) {
-  const parentTasks = await knex('tasks')
-    .where({ project_id: projectId, parent_task_id: null })
-    .select('*');
-
-  for (let task of parentTasks) {
-    task.assignees = await knex('task_assignment')
-      .join('users', 'task_assignment.user_id', 'users.id')
-      .where('task_assignment.task_id', task.id)
-      .where('users.is_active', true)
-      .select('users.id', 'users.name', 'users.email');
-
-    task.subtasks = await knex('tasks')
-      .where({ parent_task_id: task.id })
-      .select('*');
-
-    for (let subtask of task.subtasks) {
-      subtask.assignees = await knex('task_assignment')
-        .join('users', 'task_assignment.user_id', 'users.id')
-        .where('task_assignment.task_id', subtask.id)
-        .where('users.is_active', true)
-        .select('users.id', 'users.name', 'users.email');
-    }
-  }
-
-  return parentTasks;
+  const tasks = await knex('tasks').where({ project_id: projectId }).select('*');
+  if (tasks.length === 0) return [];
+  await attachAssignees(tasks);
+  return nestTasks(tasks);
 }
 
 async function findDatedByProject(projectId) {
@@ -62,30 +99,8 @@ async function findDatedByProject(projectId) {
     .select('*');
   if (tasks.length === 0) return [];
 
-  const taskIds = tasks.map(task => task.id);
-  const assignments = await knex('task_assignment')
-    .join('users', 'task_assignment.user_id', 'users.id')
-    .whereIn('task_assignment.task_id', taskIds)
-    .where('users.is_active', true)
-    .select(
-      'task_assignment.task_id as taskId',
-      'users.id',
-      'users.name',
-      'users.email'
-    );
-  const assigneesByTask = new Map();
-  for (const assignment of assignments) {
-    if (!assigneesByTask.has(assignment.taskId)) assigneesByTask.set(assignment.taskId, []);
-    assigneesByTask.get(assignment.taskId).push({
-      id: assignment.id,
-      name: assignment.name,
-      email: assignment.email
-    });
-  }
-  return tasks.map(task => ({
-    ...task,
-    assignees: assigneesByTask.get(task.id) || []
-  }));
+  await attachAssignees(tasks);
+  return tasks;
 }
 
 async function update(id, updateData) {

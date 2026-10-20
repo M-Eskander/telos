@@ -62,7 +62,8 @@ async function update(req, res, next) {
         error.code === 'TASK_PROGRESS_ONLY') {
       return res.status(403).json({ success: false, message: error.message });
     }
-    if (error.code === 'TASK_PROGRESS_CALCULATED') {
+    if (error.code === 'TASK_PROGRESS_CALCULATED' ||
+        error.code === 'TASK_WEIGHT_CALCULATED') {
       return res.status(400).json({ success: false, message: error.message });
     }
     next(error);
