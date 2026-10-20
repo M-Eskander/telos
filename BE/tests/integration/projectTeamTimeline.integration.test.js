@@ -24,11 +24,16 @@ async function createPerson(overrides = {}) {
       value === null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value)
     );
   }
-  return requestBuilder.attach(
+  const response = await requestBuilder.attach(
     'contract',
     Buffer.from('%PDF-1.7\nTest contract\n%%EOF'),
     { filename: 'contract.pdf', contentType: 'application/pdf' }
   );
+  // These tests exercise projects and timelines, not the verification gate; verify people up front.
+  if (response.status === 201 && response.body && response.body.person) {
+    await testDb('users').where({ id: response.body.person.id }).update({ email_verified_at: new Date() });
+  }
+  return response;
 }
 
 async function createProject(name) {
@@ -63,6 +68,8 @@ beforeEach(async () => {
     setup_secret: setupSecret
   });
   expect(bootstrap.status).toBe(201);
+  // These tests exercise projects and timelines, not the owner verification gate.
+  await testDb('users').where({ id: bootstrap.body.user.id }).update({ email_verified_at: Date.now() });
   ownerAgent = request.agent(app);
   const login = await ownerAgent.post('/api/auth/login').send({
     email: 'owner@example.com',

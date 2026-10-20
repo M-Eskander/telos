@@ -25,7 +25,10 @@ exports.listProjects = async (req, res, next) => {
     try {
         const allProjects = await projectService.listProjects();
         if (req.user.isOwner === true) {
-            return res.json({ ok: true, projects: allProjects });
+            return res.json({
+                ok: true,
+                projects: allProjects.map(project => ({ ...project, permissions: ['*'] }))
+            });
         }
         const permissions = await Promise.all(allProjects.map(project =>
             pdpService.getEffectivePermissions(req.user.id, req.user.roles || [], {
@@ -34,9 +37,9 @@ exports.listProjects = async (req, res, next) => {
                 ownerId: project.created_by
             })
         ));
-        const projects = allProjects.filter((project, index) =>
-            permissions[index].includes('read:project')
-        );
+        const projects = allProjects
+            .map((project, index) => ({ ...project, permissions: permissions[index] }))
+            .filter(project => project.permissions.includes('read:project'));
         return res.json({ ok: true, projects });
     } catch (err) {
         next(err);
@@ -59,7 +62,10 @@ exports.getProjectById = async (req, res, next) => {
         const { id } = req.params;
         const project = await projectService.getProjectById(id);
         if (!project) return res.status(404).json({ ok: false, message: 'Project not found' });
-        res.json({ ok: true, project });
+        const permissions = req.user?.isOwner === true
+            ? ['*']
+            : (req.effectivePermissions || []);
+        res.json({ ok: true, project: { ...project, permissions } });
     } catch (err) {
         next(err);
     }

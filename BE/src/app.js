@@ -18,6 +18,7 @@ const createSessionConfig = require('./config/session.config');
 const helmet = require('helmet');
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(helmet()); // Security headers
 const apiRateLimiter = createTokenBucketRateLimiter(['/api/'], {
   capacity: 150,

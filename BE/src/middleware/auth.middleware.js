@@ -21,9 +21,18 @@ passport.use(
           return done(null, false, { message: 'Invalid email or password' });
         }
 
+        const isOwner = await authService.isOwner(user.id);
+        if (!user.email_verified_at) {
+          return done(null, false, {
+            code: 'EMAIL_NOT_VERIFIED',
+            message: 'Your email address has not been verified yet. Open the link we emailed you, then sign in again.',
+            email: user.email
+          });
+        }
+
         delete user.password;
         user.roles = user.roles || (await authService.getUserRoleAssignments(user.id));
-        user.isOwner = await authService.isOwner(user.id);
+        user.isOwner = isOwner;
         return done(null, user);
       } catch (err) {
         return done(err);
@@ -43,6 +52,7 @@ passport.deserializeUser(async (id, done) => {
 
     user.roles = await authService.getUserRoleAssignments(id);
     user.isOwner = await authService.isOwner(id);
+    if (!user.email_verified_at) return done(null, false);
     delete user.password;
     done(null, user);
   } catch (err) {
@@ -108,6 +118,7 @@ function checkPerm(requiredPermission, resourceType = null, idParamName = 'id') 
       }
 
       const effectivePermissions = await pdpService.getEffectivePermissions(userId, roles, context);
+      req.effectivePermissions = effectivePermissions;
 
       if (!effectivePermissions.includes(normalizedPermission)) {
         return res.status(403).json({ ok: false, message: 'Insufficient permissions' });

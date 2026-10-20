@@ -122,6 +122,11 @@ the UI still has stale data.
 | `POST` | `/api/auth/login` | Public | Start a session. |
 | `GET` | `/api/auth/me` | Authenticated | Restore the current session on app load. |
 | `POST` | `/api/auth/logout` | Session | End the session. |
+| `POST` | `/api/auth/verify-email` | Public | Consume an emailed verification token. |
+| `POST` | `/api/auth/resend-verification` | Public, rate limited | Request a new verification email. |
+| `POST` | `/api/auth/forgot-password` | Public, rate limited | Email a password reset link. |
+| `POST` | `/api/auth/reset-password` | Public, rate limited | Consume a reset token and set a new password. |
+| `POST` | `/api/auth/change-password` | Authenticated | Change the signed-in user's password. |
 | `GET` | `/api` | Public | Basic health response. |
 
 ### Bootstrap owner
@@ -152,10 +157,21 @@ Success is `201`:
     "phone_number": "555-0100",
     "created_at": "...",
     "roles": ["owner"],
-    "isOwner": true
-  }
+    "isOwner": true,
+    "emailVerified": false
+  },
+  "verificationEmail": { "sent": true, "skipped": false },
+  "message": "Owner created. Check your inbox for the verification link before signing in."
 }
 ```
+
+The owner is not exempt from email verification. Bootstrap creates the owner
+unverified and sends the same 24-hour verification link used by people accounts.
+The owner cannot sign in until that link is opened. `verificationEmail.sent` is
+`false` when the deployment could not send the message (for example, no mail
+provider is configured); the sign-in screen still offers the public resend
+action. `skipped` is `true` when the server deliberately skipped delivery because
+mail is not configured.
 
 The deployment must configure `OWNER_SETUP_SECRET` with at least 32 characters.
 The value is a server provisioning secret; it should not be embedded in a
@@ -181,6 +197,7 @@ Successful response:
     "id": 12,
     "name": "Person Name",
     "email": "person@example.com",
+    "emailVerified": true,
     "roles": ["project-manager"],
     "roleAssignments": [
       {
@@ -189,19 +206,130 @@ Successful response:
         "resourceId": 42
       }
     ],
-    "isOwner": false
+    "isOwner": false,
+    "permissions": ["create:project"]
   }
 }
 ```
 
 `roles` is the convenience list of role names. `roleAssignments` carries the
-scope. For global roles, `resourceType` and `resourceId` are `null`. Login
-failure is `401`; archived people also receive a login failure.
+scope. For global roles, `resourceType` and `resourceId` are `null`.
 
-`GET /api/auth/me` returns the same `user` structure within `{ "ok": true }`.
-Use it at application startup to determine whether a session exists; `401`
-means there is no current authenticated session. `POST /api/auth/logout` returns
-`{ "ok": true }` and destroys the session.
+`permissions` is the resolved list of **global** permissions for UI hints, such
+as `create:project`; owners receive `["*"]`. Project-scoped permissions are
+returned on each project instead (see the project routes). These lists only
+drive which controls to show: the server still enforces every mutation, so they
+must not be treated as a security boundary. If the permission lookup fails, the
+list falls back to empty rather than blocking sign-in.
+
+Login failure is `401`; archived people also receive a login failure.
+
+People accounts must verify their email address before they can sign in. An
+unverified account receives `403` with a code the sign-in screen can act on:
+
+```json
+{
+  "ok": false,
+  "code": "EMAIL_NOT_VERIFIED",
+  "message": "Your email address has not been verified yet. Open the link we emailed you, then sign in again.",
+  "email": "person@example.com"
+}
+```
+
+Show a "check your email / resend" state for that code, using the returned
+`email` to prefill the resend action. The owner account follows the same rule:
+bootstrap leaves it unverified until the emailed link is opened. Do not replace
+this message with a generic permissions/"no access" message.
+
+`GET /api/auth/me` returns the same `user` structure within `{ "ok": true }`
+(including the global `permissions` list). Use it at application startup to
+determine whether a session exists; `401` means there is no current
+authenticated session. `POST /api/auth/logout` returns `{ "ok": true }` and
+destroys the session.
+
+### Email verification
+
+People created by the owner start unverified, and the owner account starts
+unverified after bootstrap. Creating a person or bootstrapping the owner
+triggers a verification email (free Resend tier, configured by the deployment);
+the email links to `/verify-email.html?token=...`, which posts the token to the
+API. Verification tokens are single-use and expire after 24 hours.
+
+`POST /api/auth/verify-email` JSON body:
+
+```json
+{ "token": "the-token-from-the-emailed-link" }
+```
+
+Success is `200` with the verified user summary. Failures:
+
+| Status | Code | Meaning |
+|---:|---|---|
+| `400` | `INVALID_TOKEN` | Malformed, unknown, or already used token. |
+| `410` | `TOKEN_EXPIRED` | The token existed but is past its 24-hour lifetime. |
+| `429` | — | Too many requests (global API rate limit). |
+
+`POST /api/auth/resend-verification` JSON body `{ "email": "..." }`. It always
+returns `200` with a generic message so it never reveals whether an account
+exists; requests are limited to 5 per 15 minutes per client IP. The response
+does not indicate whether an email was actually sent.
+
+Owner-only overrides (see section 7):
+
+- `POST /api/admin/people/:userId/send-verification` sends a fresh link
+  (`409` if already verified, `503` if the deployment has no mail provider).
+- `POST /api/admin/people/:userId/verify-email` marks the address verified
+  manually, for cases where the person's address was entered incorrectly.
+
+Changing a person's email address resets verification, so the new address must
+be verified again.
+
+### Password change and recovery
+
+Every role, including the owner, can change their password from the Account
+page. Passwords must be at least 8 characters.
+
+`POST /api/auth/change-password` (authenticated) JSON body:
+
+```json
+{
+  "current_password": "the-current-password",
+  "new_password": "the-new-password"
+}
+```
+
+Success is `200` with `{ "ok": true, "sessionsInvalidated": 1 }`. The current
+device stays signed in and every other session for the account is destroyed.
+Failures are `400` with `INVALID_CURRENT_PASSWORD` or `WEAK_PASSWORD`.
+
+`POST /api/auth/forgot-password` JSON body `{ "email": "..." }`. It always
+returns `200` with a generic message so it never reveals whether an account
+exists; requests are limited to 10 per 15 minutes per client IP. A `400` is
+returned only when the email field is missing. Accounts without a password and
+archived accounts never receive mail.
+
+The emailed link points at `/reset-password?token=...`. The reset token is
+single-use, expires after 1 hour, and only its SHA-256 hash is stored.
+
+`POST /api/auth/reset-password` JSON body:
+
+```json
+{ "token": "the-token-from-the-emailed-link", "new_password": "the-new-password" }
+```
+
+Success is `200` and invalidates every existing session for the account, so the
+user must sign in again with the new password. Failures:
+
+| Status | Code | Meaning |
+|---:|---|---|
+| `400` | `INVALID_TOKEN` | Malformed, unknown, or already used token. |
+| `400` | `WEAK_PASSWORD` | Fewer than 8 characters (or more than 128). |
+| `410` | `TOKEN_EXPIRED` | The token existed but is past its 1-hour lifetime. |
+| `429` | — | Too many attempts; respect `Retry-After`. |
+
+Unverified people can request a reset, but resetting the password does not
+verify the email address: they still cannot sign in until the verification link
+is opened.
 
 Recommended authentication lifecycle:
 
@@ -219,9 +347,9 @@ All project routes are under `/api/projects`.
 
 | Method | Route | Required access | Response data |
 |---|---|---|---|
-| `GET` | `/api/projects` | Authenticated | `{ ok, projects }`; non-owner results are filtered by `read:project`. |
+| `GET` | `/api/projects` | Authenticated | `{ ok, projects }`; non-owner results are filtered by `read:project`; each project carries `permissions`. |
 | `POST` | `/api/projects` | `create:project` | `201 { ok, project }`. |
-| `GET` | `/api/projects/:id` | `read:project` on project | `{ ok, project }`. |
+| `GET` | `/api/projects/:id` | `read:project` on project | `{ ok, project }`; includes `permissions`. |
 | `PATCH` | `/api/projects/:id` | `update:project` on project | `{ ok, project }`. |
 | `DELETE` | `/api/projects/:id` | `delete:project` on project | `{ ok, message }`. |
 
@@ -235,6 +363,20 @@ Project create JSON:
 fields are ignored. A project response includes its database fields, typically
 `id`, `name`, `description`, `created_by`, `created_at`, and calculated
 `progress`. Treat `created_by` and progress as server-owned/read-only.
+
+Project list and detail responses also include `permissions`: the current user's
+effective permissions on that project (`read:task`, `create:task`,
+`update:project`, `delete:project`, and so on). Owners receive `["*"]`. Use this
+list to hide tabs and action buttons the person cannot use:
+
+- `read:task` — show the Tasks tab.
+- `create:task` — show Add task / Add subtask.
+- `update:task` — allow opening and editing a task.
+- `delete:task` — show Delete in the task editor.
+- `update:project` — allow team/department changes and project detail edits.
+- `delete:project` — show the delete-project card.
+
+The server re-checks every request; the list is only a UI hint.
 
 `GET /api/projects` requires authentication but is not itself permission-gated
 for a non-owner; it filters the list to projects for which the user has
@@ -444,11 +586,13 @@ member directory API.
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/api/admin/people` | List people, role names/assignments, contract summaries, `hasContract`, and `isOwner`. |
-| `POST` | `/api/admin/people` | Create a person and their first uploaded contract atomically. |
-| `GET` | `/api/admin/people/:userId` | Person details, role objects, person attributes, contracts, and owner flag. |
-| `PATCH` | `/api/admin/people/:userId` | Update profile fields and/or archive/reactivate. |
+| `GET` | `/api/admin/people` | List people, role names/assignments, contract summaries, `hasContract`, `isOwner`, and `emailVerified`. |
+| `POST` | `/api/admin/people` | Create a person and their first uploaded contract atomically. Sends a verification email. |
+| `GET` | `/api/admin/people/:userId` | Person details, role objects, person attributes, contracts, `emailVerified`, and owner flag. |
+| `PATCH` | `/api/admin/people/:userId` | Update profile fields and/or archive/reactivate. An email change resets verification. |
 | `POST` | `/api/admin/people/:userId/contracts` | Add a contract PDF and dates. |
+| `POST` | `/api/admin/people/:userId/send-verification` | Resend the verification email for an unverified person. |
+| `POST` | `/api/admin/people/:userId/verify-email` | Manually mark a person's email verified (owner override). |
 | `GET` | `/api/admin/contracts/:contractId/file` | Download the private PDF. |
 | `PUT` | `/api/admin/people/:userId/roles` | Replace a person's full role assignment list. |
 | `PUT` | `/api/admin/people/:userId/attributes` | Replace a person's full attribute override list. |
@@ -488,8 +632,11 @@ or:
 
 Use a `FormData` object; append `roles` as `JSON.stringify(value)` and append the
 binary file under the exact field name `contract`. The response is
-`201 { "ok": true, "person": ... }`. Email conflict is `409`; invalid fields,
-missing contract, invalid PDF, or invalid dates are `400`.
+`201 { "ok": true, "person": ... }`. The person object includes
+`emailVerified: false` and `verificationEmail: { sent, skipped }`, so the UI can
+say whether the invitation email was accepted by the mail provider. Email
+conflict is `409`; invalid fields, missing contract, invalid PDF, or invalid
+dates are `400`.
 
 The create operation stores the PDF privately and creates the person and
 contract in a database transaction. If database creation fails after file
@@ -522,10 +669,10 @@ not treat it as an automatic account-state transition.
 `GET /api/admin/people` has the exact top-level shape
 `{ "ok": true, "people": [...] }`. Each list item includes profile fields
 (`id`, `name`, `email`, `phone_number`, `location`, `age`, `is_active`,
-`created_at`), `roles` as an array of role-name strings, `roleAssignments` as
-an array of `{ name, resourceType, resourceId }`, `contracts` as contract
-summaries, `hasContract` as a boolean, and `isOwner` as a boolean. Empty
-assignments and contracts are empty arrays, not `null`.
+`created_at`), `emailVerified` as a boolean, `roles` as an array of role-name
+strings, `roleAssignments` as an array of `{ name, resourceType, resourceId }`,
+`contracts` as contract summaries, `hasContract` as a boolean, and `isOwner` as
+a boolean. Empty assignments and contracts are empty arrays, not `null`.
 `is_active` is serialized from a database boolean and can appear as `true` /
 `false` or `1` / `0`, depending on the database driver; normalize it before
 using strict boolean comparisons in the UI.

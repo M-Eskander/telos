@@ -12,6 +12,8 @@ router.route('/people')
 router.get('/people/:userId', controller.getPerson);
 router.patch('/people/:userId', controller.updatePerson);
 router.post('/people/:userId/contracts', contractUpload, controller.addPersonContract);
+router.post('/people/:userId/send-verification', controller.sendPersonVerification);
+router.post('/people/:userId/verify-email', controller.verifyPersonEmail);
 router.put('/people/:userId/roles', controller.setPersonRoles);
 router.put('/people/:userId/attributes', controller.setPersonAttributes);
 router.get('/contracts/:contractId/file', controller.getContractFile);

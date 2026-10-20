@@ -33,6 +33,8 @@ beforeEach(async () => {
       setup_secret: setupSecret
     });
   expect(response.status).toBe(201);
+  // These tests exercise authorization, not the owner verification gate.
+  await testDb('users').where({ id: response.body.user.id }).update({ email_verified_at: Date.now() });
 
   ownerAgent = request.agent(app);
   await ownerAgent.post('/api/auth/login').send({
@@ -83,7 +85,8 @@ describe('Owner-managed authorization model', () => {
       email: 'person@example.com',
       phone_number: '5550102',
       password: '$2a$10$hashedpassword',
-      is_active: true
+      is_active: true,
+      email_verified_at: new Date()
     });
     const person = await testDb('users').where({ email: 'person@example.com' }).first();
     const personAgent = request.agent(app);
@@ -147,6 +150,10 @@ describe('Owner-managed authorization model', () => {
         { filename: 'manager.pdf', contentType: 'application/pdf' }
       );
     expect(personResponse.status).toBe(201);
+    const managerVerification = await ownerAgent.post(
+      `/api/admin/people/${personResponse.body.person.id}/verify-email`
+    );
+    expect(managerVerification.status).toBe(200);
     const scopedAssignment = await ownerAgent.put(
       `/api/admin/people/${personResponse.body.person.id}/roles`
     ).send({

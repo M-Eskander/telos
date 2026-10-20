@@ -2,10 +2,11 @@ const knex = require('../config/knex');
 const bcrypt = require('bcryptjs');
 const pdpService = require('./pdp.service');
 const contractService = require('./contract.service');
+const emailVerificationService = require('./emailVerification.service');
 
 async function listPeople() {
   const people = await knex('users')
-    .select('id', 'name', 'email', 'phone_number', 'location', 'age', 'is_active', 'created_at')
+    .select('id', 'name', 'email', 'phone_number', 'location', 'age', 'is_active', 'created_at', 'email_verified_at')
     .orderBy('name');
   const assignments = await knex('user_roles')
     .join('roles', 'user_roles.role_id', 'roles.id')
@@ -34,15 +35,19 @@ async function listPeople() {
     if (!contractsByUser.has(contract.user_id)) contractsByUser.set(contract.user_id, []);
     contractsByUser.get(contract.user_id).push(contractService.publicContract(contract));
   }
-  return people.map(person => ({
-    ...person,
-    roles: rolesByUser.get(person.id) || [],
-    roleAssignments: assignmentsByUser.get(person.id) || [],
-    contracts: contractsByUser.get(person.id) || [],
-    hasContract: (contractsByUser.get(person.id) || [])
-      .some(contract => contract.uploaded && contract.start_date && contract.end_date),
-    isOwner: !!ownerAccount && ownerAccount.user_id === person.id
-  }));
+  return people.map(person => {
+    const { email_verified_at, ...fields } = person;
+    return {
+      ...fields,
+      emailVerified: !!email_verified_at,
+      roles: rolesByUser.get(person.id) || [],
+      roleAssignments: assignmentsByUser.get(person.id) || [],
+      contracts: contractsByUser.get(person.id) || [],
+      hasContract: (contractsByUser.get(person.id) || [])
+        .some(contract => contract.uploaded && contract.start_date && contract.end_date),
+      isOwner: !!ownerAccount && ownerAccount.user_id === person.id
+    };
+  });
 }
 
 async function normalizeRoleAssignments(trx, input) {
@@ -105,9 +110,10 @@ async function normalizeRoleAssignments(trx, input) {
 
 async function getPersonAccessDetails(userId) {
   const person = await knex('users').where({ id: userId })
-    .select('id', 'name', 'email', 'phone_number', 'location', 'age', 'is_active', 'created_at')
+    .select('id', 'name', 'email', 'phone_number', 'location', 'age', 'is_active', 'created_at', 'email_verified_at')
     .first();
   if (!person) return null;
+  const { email_verified_at, ...personFields } = person;
   const [roles, attributes] = await Promise.all([
     knex('user_roles')
       .join('roles', 'user_roles.role_id', 'roles.id')
@@ -125,7 +131,14 @@ async function getPersonAccessDetails(userId) {
   ]);
   const ownerAccount = await knex('owner_account').where({ id: 1, user_id: userId }).first();
   const contracts = await contractService.listContractsForUser(userId);
-  return { ...person, roles, attributes, contracts, isOwner: !!ownerAccount };
+  return {
+    ...personFields,
+    emailVerified: !!email_verified_at,
+    roles,
+    attributes,
+    contracts,
+    isOwner: !!ownerAccount
+  };
 }
 
 async function createPerson(data, contractFile) {
@@ -170,12 +183,26 @@ async function createPerson(data, contractFile) {
   );
   created.user.contracts = [created.contract];
   created.user.hasContract = true;
+  let verificationEmail = { sent: false, skipped: false };
+  try {
+    const delivery = await emailVerificationService.sendVerificationEmail(created.user);
+    verificationEmail = { sent: !!delivery.sent, skipped: !!delivery.skipped };
+  } catch (error) {
+    console.error(`Failed to send verification email to ${created.user.email}:`, error.message);
+  }
+  created.user.verificationEmail = verificationEmail;
   return safePerson(created.user);
 }
 
 function safePerson(user) {
   if (!user) return user;
   delete user.password;
+  delete user.email_verification_token_hash;
+  delete user.email_verification_expires_at;
+  if (user.email_verified_at !== undefined) {
+    user.emailVerified = !!user.email_verified_at;
+    delete user.email_verified_at;
+  }
   return user;
 }
 
@@ -193,6 +220,15 @@ async function updatePerson(userId, data) {
       .first();
     if (!hasUploadedContract) {
       throw new TypeError('An uploaded contract with start and end dates is required before activating a person');
+    }
+  }
+  if (typeof data.email === 'string') {
+    const current = await knex('users').where({ id: userId }).select('email').first();
+    if (current && current.email !== data.email) {
+      // Verification is bound to the address; a changed address must be re-verified.
+      data.email_verified_at = null;
+      data.email_verification_token_hash = null;
+      data.email_verification_expires_at = null;
     }
   }
   const updated = await knex('users').where({ id: userId }).update(data);

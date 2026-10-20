@@ -1,4 +1,5 @@
 const accessControlService = require('../services/accessControl.service');
+const emailVerificationService = require('../services/emailVerification.service');
 
 function parsePersonFields(body) {
   const fields = { ...body };
@@ -141,6 +142,50 @@ exports.updatePerson = async (req, res, next) => {
     if (error instanceof TypeError) {
       return res.status(400).json({ ok: false, message: error.message });
     }
+    return next(error);
+  }
+};
+
+exports.sendPersonVerification = async (req, res, next) => {
+  try {
+    const person = await accessControlService.getPersonAccessDetails(req.params.userId);
+    if (!person) return res.status(404).json({ ok: false, message: 'Person not found' });
+    if (person.emailVerified) {
+      return res.status(409).json({ ok: false, message: 'This email address is already verified' });
+    }
+    const result = await emailVerificationService.sendVerificationEmail(person);
+    if (result.skipped) {
+      return res.status(503).json({
+        ok: false,
+        message: 'Email delivery is not configured on the server'
+      });
+    }
+    if (!result.sent) {
+      return res.status(502).json({
+        ok: false,
+        message: 'The verification email could not be sent; please try again'
+      });
+    }
+    return res.json({ ok: true, message: 'Verification email sent' });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+exports.verifyPersonEmail = async (req, res, next) => {
+  try {
+    const person = await emailVerificationService.markVerified(req.params.userId);
+    if (!person) return res.status(404).json({ ok: false, message: 'Person not found' });
+    return res.json({
+      ok: true,
+      person: {
+        id: person.id,
+        name: person.name,
+        email: person.email,
+        emailVerified: true
+      }
+    });
+  } catch (error) {
     return next(error);
   }
 };

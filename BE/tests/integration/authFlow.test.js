@@ -54,7 +54,8 @@ describe('Auth Flow Integration Tests', () => {
         email: 'test@example.com',
         password: '$2a$10$hashedpassword', // bcrypt hash for 'password'
         phone_number: '1234567890',
-        created_at: new Date()
+        created_at: new Date(),
+        email_verified_at: new Date()
       });
 
       const user = await testDb('users').where({ email: 'test@example.com' }).first();
@@ -106,7 +107,8 @@ describe('Auth Flow Integration Tests', () => {
         email: 'viewer@example.com',
         password: '$2a$10$hashedpassword',
         phone_number: '1234567890',
-        created_at: new Date()
+        created_at: new Date(),
+        email_verified_at: new Date()
       });
 
       testUser = await testDb('users').where({ email: 'viewer@example.com' }).first();
@@ -171,7 +173,8 @@ describe('Auth Flow Integration Tests', () => {
         email: 'admin@example.com',
         password: '$2a$10$hashedpassword',
         phone_number: '1234567890',
-        created_at: new Date()
+        created_at: new Date(),
+        email_verified_at: new Date()
       });
 
       const adminUser = await testDb('users').where({ email: 'admin@example.com' }).first();

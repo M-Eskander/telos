@@ -50,6 +50,8 @@ async function bootstrapOwner({ name, phone_number, email, password }) {
         email,
         password: hashed,
         created_at: new Date()
+        // The owner is not exempt from verification: they must confirm their
+        // email address before they can sign in for the first time.
       });
       let ownerRole = await trx('roles').where({ name: 'owner' }).first();
       if (!ownerRole) {
