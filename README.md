@@ -166,6 +166,17 @@ npx knex seed:run --knexfile knexfile.js --env development
 before inserting the built-in project/task permission definitions. Do not run
 this seed casually against a database with configured permission grants.
 
+Two other seeds are safe to run against a live database, because they only add
+what is missing and recalculate the values the rules own:
+
+```powershell
+npx knex seed:run --knexfile knexfile.js --env development --specific=access_presets_seed.js
+npx knex seed:run --knexfile knexfile.js --env development --specific=recalculate_task_derivation_seed.js
+```
+
+`scripts/post-deploy.sh` runs the migrations and both of those seeds together;
+see [Deploying](#deploying).
+
 The application loads `BE/.env` when it starts, but the checked-in Knex
 configuration does not load dotenv itself. When running Knex CLI commands, make
 sure the database environment variables are exported in the shell or supplied
@@ -259,6 +270,50 @@ The focused owner and contract API behavior is also described in
 The frontend must treat API authorization responses as authoritative. Role
 names alone do not imply access to every project.
 
+## Deploying
+
+A deployment has three parts: the database, the API, and the frontend. Run
+them in this order.
+
+### 1. Database
+
+From `BE`, with the database connection variables exported:
+
+```sh
+./scripts/post-deploy.sh knexfile.js production
+```
+
+The script applies the migrations, installs the built-in access presets, and
+recalculates the derived task values (weight drives priority, progress drives
+status). Every step is additive and idempotent, so it is safe to run on every
+deploy.
+
+**The seeds are not part of the migrations.** A deployment that applies the
+migrations but skips the seeds runs without the four built-in role levels and
+with task values that do not follow the derivation rules. The script exists so
+that step cannot be forgotten.
+
+The one deliberate exception is the weight reset, which only runs when
+`RESET_TASK_WEIGHTS=1` is set explicitly. That is a one-time action, not part
+of a normal deploy.
+
+### 2. API
+
+Rebuild and restart the API. Containers that run `migrate:latest` on start
+still need the seeds from step 1.
+
+### 3. Frontend
+
+The frontend is built separately and published as static files:
+
+```sh
+npm run build      # writes dist/
+```
+
+Copy the contents of `dist/` into the directory the web server serves and
+confirm the new hashed assets are reachable. Old asset files can stay on disk
+for a while; the index file decides which ones are used.
+
 ## Testing
 
 From `BE`:
@@ -276,9 +331,11 @@ contract storage are ignored by Git.
 
 - Contract PDFs are stored outside the public web root. Production storage must
   persist across application restarts and be backed up.
-- The API rate limit is 150 requests per 15 minutes per client IP. Its bucket
-  storage is process-local; multi-instance deployments should enforce a shared
-  limit upstream or use a shared limiter.
+- The API rate limit is 600 requests per 15 minutes per signed-in person, and
+  falls back to the client address for signed-out traffic. Sign-in attempts
+  are limited separately to 30 per 15 minutes per address. The bucket storage
+  is process-local; multi-instance deployments should enforce a shared limit
+  upstream or use a shared limiter.
 - The current repository does not include a frontend, OpenAPI document,
   password-reset flow, public people directory, pagination/search contract, or
   revenue-sharing feature.
