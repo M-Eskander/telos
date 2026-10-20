@@ -3,6 +3,11 @@ const bcrypt = require('bcryptjs');
 const pdpService = require('./pdp.service');
 const contractService = require('./contract.service');
 const emailVerificationService = require('./emailVerification.service');
+const {
+  getPreset,
+  presetByAttribute,
+  PRESET_ATTRIBUTE_NAMES
+} = require('../config/accessPresets');
 
 async function listPeople() {
   const people = await knex('users')
@@ -92,6 +97,20 @@ async function normalizeRoleAssignments(trx, input) {
     throw new TypeError('One or more roles do not exist');
   }
   const rolesByName = new Map(roles.map(role => [role.name, role]));
+  const presetRoleIds = new Set();
+  if (roles.length) {
+    const presetRows = await trx('role_attributes')
+      .join('attributes', 'role_attributes.attribute_id', 'attributes.id')
+      .whereIn('role_attributes.role_id', roles.map(role => role.id))
+      .whereIn('attributes.name', PRESET_ATTRIBUTE_NAMES)
+      .select('role_attributes.role_id as roleId');
+    for (const row of presetRows) presetRoleIds.add(Number(row.roleId));
+  }
+  if (assignments.some(role =>
+    presetRoleIds.has(Number(rolesByName.get(role.name).id)) && role.resourceType !== 'project'
+  )) {
+    throw new TypeError('Project access presets must be assigned within a project');
+  }
   const projectIds = [...new Set(assignments
     .filter(role => role.resourceType === 'project')
     .map(role => role.resourceId))];
@@ -245,7 +264,32 @@ async function getContractFile(contractId) {
 }
 
 async function listRoles() {
-  return knex('roles').select('id', 'name').orderBy('name');
+  const roles = await knex('roles').select('id', 'name').orderBy('name');
+  const attributes = await knex('role_attributes')
+    .join('attributes', 'role_attributes.attribute_id', 'attributes.id')
+    .select(
+      'role_attributes.role_id as roleId',
+      'attributes.id as attributeId',
+      'attributes.name',
+      'attributes.resource',
+      'role_attributes.resource_id as resourceId'
+    );
+  const byRole = new Map();
+  for (const attribute of attributes) {
+    if (!byRole.has(attribute.roleId)) byRole.set(attribute.roleId, []);
+    byRole.get(attribute.roleId).push(attribute);
+  }
+  return roles.map(role => {
+    const roleAttributes = byRole.get(role.id) || [];
+    const preset = roleAttributes
+      .map(attribute => presetByAttribute(attribute.name))
+      .find(Boolean);
+    return {
+      ...role,
+      attributes: roleAttributes,
+      accessPreset: preset ? preset.key : null
+    };
+  });
 }
 
 async function getRoleAccessDetails(roleId) {
@@ -255,21 +299,71 @@ async function getRoleAccessDetails(roleId) {
     .join('attributes', 'role_attributes.attribute_id', 'attributes.id')
     .where({ 'role_attributes.role_id': roleId })
     .select('attributes.id as attributeId', 'attributes.name', 'attributes.resource', 'role_attributes.resource_id as resourceId');
+  const preset = role.attributes
+    .map(attribute => presetByAttribute(attribute.name))
+    .find(Boolean);
+  role.accessPreset = preset ? preset.key : null;
   return role;
 }
 
-async function createRole(name) {
+async function ensurePresetAttribute(trx, preset) {
+  let attribute = await trx('attributes').where({ name: preset.attribute }).first();
+  if (!attribute) {
+    const [attributeId] = await trx('attributes').insert({
+      name: preset.attribute,
+      resource: 'project',
+      description: preset.attributeDescription
+    });
+    attribute = await trx('attributes').where({ id: attributeId }).first();
+  } else if (attribute.resource !== 'project') {
+    throw new TypeError(`The ${preset.attribute} attribute must use the project resource`);
+  }
+  return attribute;
+}
+
+async function createRole(name, presetKey = null) {
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new TypeError('Role name is required');
+  }
   if (name.trim().toLowerCase() === 'owner') {
     throw new TypeError('The owner role is reserved');
   }
-  const normalizedName = name.trim();
-  if (await knex('roles').where({ name: normalizedName }).first()) {
-    const error = new Error('Role already exists');
-    error.code = 'ROLE_ALREADY_EXISTS';
-    throw error;
+  const preset = presetKey === undefined || presetKey === null || presetKey === ''
+    ? null
+    : getPreset(presetKey);
+  if (presetKey !== undefined && presetKey !== null && presetKey !== '' && !preset) {
+    throw new TypeError('Unknown access preset');
   }
-  const [id] = await knex('roles').insert({ name: normalizedName });
-  return knex('roles').where({ id }).first();
+
+  return knex.transaction(async trx => {
+    const normalizedName = name.trim();
+    if (await trx('roles').where({ name: normalizedName }).first()) {
+      const error = new Error('Role already exists');
+      error.code = 'ROLE_ALREADY_EXISTS';
+      throw error;
+    }
+    const [id] = await trx('roles').insert({ name: normalizedName });
+    if (preset) {
+      const attribute = await ensurePresetAttribute(trx, preset);
+      await trx('role_attributes').insert({
+        role_id: id,
+        attribute_id: attribute.id,
+        resource_id: null,
+        value: 'true'
+      });
+    }
+    const role = await trx('roles').where({ id }).first();
+    const attributes = await trx('role_attributes')
+      .join('attributes', 'role_attributes.attribute_id', 'attributes.id')
+      .where({ 'role_attributes.role_id': id })
+      .select(
+        'attributes.id as attributeId',
+        'attributes.name',
+        'attributes.resource',
+        'role_attributes.resource_id as resourceId'
+      );
+    return { ...role, attributes, accessPreset: preset ? preset.key : null };
+  });
 }
 
 async function setPersonRoles(userId, roleNames) {

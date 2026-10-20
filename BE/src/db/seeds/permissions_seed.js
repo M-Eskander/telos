@@ -6,12 +6,15 @@ exports.seed = async function(knex) {
     { action: 'read', resource: 'project' },
     { action: 'update', resource: 'project' },
     { action: 'delete', resource: 'project' },
+    { action: 'manage_team', resource: 'project' },
 
     { action: 'create', resource: 'task' },
     { action: 'read', resource: 'task' },
+    { action: 'view_own', resource: 'task' },
     { action: 'update', resource: 'task' },
     { action: 'delete', resource: 'task' },
-
+    { action: 'manage', resource: 'task' },
     { action: 'assign', resource: 'task' },
+    { action: 'read', resource: 'team' },
   ]);
 };

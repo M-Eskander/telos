@@ -123,6 +123,16 @@ exports.listMembers = async (req, res, next) => {
     }
 };
 
+exports.listAvailablePeople = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const people = await projectService.listAvailableProjectPeople(req.params.id);
+        return res.json({ ok: true, people });
+    } catch (err) {
+        return next(err);
+    }
+};
+
 exports.assignMember = async (req, res, next) => {
     try {
         if (!await ensureProjectExists(req, res)) return;
@@ -167,7 +177,12 @@ exports.removeMember = async (req, res, next) => {
 exports.getProjectTimeline = async (req, res, next) => {
     try {
         if (!await ensureProjectExists(req, res)) return;
-        const tasks = await taskService.getProjectTimeline(req.params.id);
+        const viewOwnOnly = req.user?.isOwner !== true &&
+            (req.effectivePermissions || []).includes('view_own:task');
+        const tasks = await taskService.getProjectTimeline(req.params.id, {
+            userId: req.user?.id,
+            viewAll: !viewOwnOnly
+        });
         return res.json({ ok: true, tasks });
     } catch (err) {
         return next(err);

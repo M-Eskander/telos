@@ -20,10 +20,18 @@ async function create(req, res, next) {
   }
 }
 
+function isRestrictedToOwnTasks(req) {
+  return req.user?.isOwner !== true &&
+    (req.effectivePermissions || []).includes('view_own:task');
+}
+
 async function getAllForProject(req, res, next) {
   try {
     const { projectId } = req.params;
-    const tasks = await taskService.getProjectTasks(projectId);
+    const tasks = await taskService.getProjectTasks(projectId, {
+      userId: req.user?.id,
+      viewAll: !isRestrictedToOwnTasks(req)
+    });
     return res.status(200).json({ success: true, data: tasks });
   } catch (error) {
     next(error);
@@ -33,7 +41,12 @@ async function getAllForProject(req, res, next) {
 async function update(req, res, next) {
   try {
     const { id, projectId } = req.params;
-    const updatedTask = await taskService.updateTask(id, req.body, projectId);
+    const canManageTasks = req.user?.isOwner === true ||
+      (req.effectivePermissions || []).includes('manage:task');
+    const updatedTask = await taskService.updateTask(id, req.body, projectId, {
+      userId: req.user?.id,
+      canManageTasks
+    });
     if (!updatedTask) {
       return res.status(404).json({ success: false, message: 'Task not found in this project' });
     }
@@ -43,6 +56,13 @@ async function update(req, res, next) {
       return res.status(400).json({ success: false, message: error.message });
     }
     if (error.code === 'INVALID_TASK') {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+    if (error.code === 'TASK_NOT_ASSIGNED' ||
+        error.code === 'TASK_PROGRESS_ONLY') {
+      return res.status(403).json({ success: false, message: error.message });
+    }
+    if (error.code === 'TASK_PROGRESS_CALCULATED') {
       return res.status(400).json({ success: false, message: error.message });
     }
     next(error);

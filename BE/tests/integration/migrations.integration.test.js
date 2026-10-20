@@ -41,7 +41,7 @@ describe('Database migration lifecycle', () => {
     await permissionsSeed.seed(migrationDb);
     const seededPermissions = await migrationDb('permissions')
       .select('action', 'resource');
-    expect(seededPermissions).toHaveLength(9);
+    expect(seededPermissions).toHaveLength(13);
     expect(seededPermissions).toEqual(expect.arrayContaining([
       { action: 'read', resource: 'project' },
       { action: 'create', resource: 'task' },

@@ -9,6 +9,51 @@ function invalidTask(message) {
   return error;
 }
 
+function taskAccessError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function isAssignedTo(task, userId) {
+  return (task.assignees || []).some(assignee => Number(assignee.id) === Number(userId));
+}
+
+// A member with view_own:task only receives assigned work. Assigned subtasks
+// are promoted to top-level rows when their parent is not assigned, so the
+// response never discloses an unassigned task.
+function filterTasksForAssignee(tasks, userId) {
+  const filtered = [];
+  for (const task of tasks) {
+    const taskAssigned = isAssignedTo(task, userId);
+    const assignedSubtasks = (task.subtasks || []).filter(subtask => isAssignedTo(subtask, userId));
+
+    if (taskAssigned) {
+      const hiddenSubtasks = (task.subtasks || []).length - assignedSubtasks.length;
+      filtered.push({
+        ...task,
+        subtasks: assignedSubtasks,
+        ...(hiddenSubtasks > 0 ? { has_hidden_subtasks: true } : {})
+      });
+      continue;
+    }
+
+    for (const subtask of assignedSubtasks) {
+      filtered.push({
+        ...subtask,
+        parent_task_id: null,
+        subtasks: [],
+        is_subtask: true
+      });
+    }
+  }
+  return filtered;
+}
+
+function filterTimelineForAssignee(tasks, userId) {
+  return tasks.filter(task => isAssignedTo(task, userId));
+}
+
 function isValidDate(value) {
   return value === null || (
     typeof value === 'string' &&
@@ -153,15 +198,20 @@ async function createTask(projectId, userId, data) {
   return taskRepo.findById(task.id);
 }
 
-async function getProjectTasks(projectId) {
-  return await taskRepo.findByProject(projectId);
+async function getProjectTasks(projectId, options = null) {
+  const tasks = await taskRepo.findByProject(projectId);
+  if (!options || options.viewAll === true) return tasks;
+  return filterTasksForAssignee(tasks, options.userId);
 }
 
-async function getProjectTimeline(projectId) {
-  return taskRepo.findDatedByProject(projectId);
+async function getProjectTimeline(projectId, options = null) {
+  const tasks = await taskRepo.findDatedByProject(projectId);
+  if (!options || options.viewAll === true) return tasks;
+  return filterTimelineForAssignee(tasks, options.userId);
 }
 
-async function updateTask(id, data, projectId = null) {
+async function updateTask(id, data, projectId = null, options = {}) {
+  const canManageTasks = options.canManageTasks !== false;
   const updatedTask = await knex.transaction(async trx => {
     const taskQuery = trx('tasks').where({ id });
     if (projectId !== null && projectId !== undefined) taskQuery.andWhere({ project_id: projectId });
@@ -172,6 +222,35 @@ async function updateTask(id, data, projectId = null) {
       }
       return null;
     }
+
+    if (!canManageTasks) {
+      if (!options.userId) {
+        throw taskAccessError('TASK_NOT_ASSIGNED', 'You can only update tasks assigned to you');
+      }
+      const assignment = await trx('task_assignment')
+        .where({ task_id: task.id, user_id: options.userId })
+        .first();
+      if (!assignment) {
+        throw taskAccessError('TASK_NOT_ASSIGNED', 'You can only update tasks assigned to you');
+      }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        validateTaskData(data, task);
+      }
+      if (Object.keys(data).some(key => key !== 'progress')) {
+        throw taskAccessError('TASK_PROGRESS_ONLY', 'You can only update progress for this task');
+      }
+      const subtasks = await trx('tasks')
+        .where({ parent_task_id: task.id })
+        .count({ count: '*' })
+        .first();
+      if (Number(subtasks.count) > 0) {
+        throw taskAccessError(
+          'TASK_PROGRESS_CALCULATED',
+          'Progress for this task is calculated from its subtasks'
+        );
+      }
+    }
+
     validateTaskData(data, task);
 
     const allowedUpdates = {

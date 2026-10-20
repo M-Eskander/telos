@@ -110,6 +110,17 @@ async function listProjectMembers(projectId) {
     .orderBy('users.name');
 }
 
+async function listAvailableProjectPeople(projectId) {
+  const memberIds = knex('project_memberships')
+    .select('user_id')
+    .where({ project_id: projectId });
+  return knex('users')
+    .where({ is_active: true })
+    .whereNotIn('id', memberIds)
+    .select('id', 'name', 'email')
+    .orderBy('name');
+}
+
 async function assignProjectMember(projectId, userId, departmentId = null) {
   await knex.transaction(async trx => {
     if (!await trx('projects').where({ id: projectId }).first()) {
@@ -170,6 +181,7 @@ module.exports = {
   createProjectDepartment,
   deleteProjectDepartment,
   listProjectMembers,
+  listAvailableProjectPeople,
   assignProjectMember,
   removeProjectMember
 };

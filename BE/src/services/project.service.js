@@ -37,6 +37,10 @@ async function listProjectMembers(projectId) {
     return projectRepo.listProjectMembers(projectId);
 }
 
+async function listAvailableProjectPeople(projectId) {
+    return projectRepo.listAvailableProjectPeople(projectId);
+}
+
 async function assignProjectMember(projectId, userId, departmentId) {
     return projectRepo.assignProjectMember(projectId, userId, departmentId);
 }
@@ -55,6 +59,7 @@ module.exports = {
     createProjectDepartment,
     deleteProjectDepartment,
     listProjectMembers,
+    listAvailableProjectPeople,
     assignProjectMember,
     removeProjectMember
 };

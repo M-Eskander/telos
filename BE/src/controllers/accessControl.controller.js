@@ -226,11 +226,17 @@ exports.getRole = async (req, res, next) => {
 
 exports.createRole = async (req, res, next) => {
   try {
-    const { name } = req.body || {};
+    const { name, preset } = req.body || {};
     if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ ok: false, message: 'Role name is required' });
     }
-    return res.status(201).json({ ok: true, role: await accessControlService.createRole(name) });
+    if (preset !== undefined && preset !== null && typeof preset !== 'string') {
+      return res.status(400).json({ ok: false, message: 'Access preset must be a string' });
+    }
+    return res.status(201).json({
+      ok: true,
+      role: await accessControlService.createRole(name, preset)
+    });
   } catch (error) {
     if (error instanceof TypeError) {
       return res.status(400).json({ ok: false, message: error.message });
