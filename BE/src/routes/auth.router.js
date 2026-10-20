@@ -24,7 +24,15 @@ const resetPasswordLimiter = createTokenBucketRateLimiter(['/reset-password'], {
   message: 'Too many attempts, please try again later.'
 });
 
-router.post('/login', authController.login);
+// Sign-in attempts are limited per address so a stolen password cannot be
+// guessed, while still allowing a person to retry comfortably.
+const loginLimiter = createTokenBucketRateLimiter(['/login'], {
+  capacity: 30,
+  refillRate: 30 / (15 * 60),
+  message: 'Too many sign-in attempts. Please wait a few minutes and try again.'
+});
+
+router.post('/login', loginLimiter, authController.login);
 router.post('/logout', authController.logout);
 router.get('/me', authController.me);
 router.post('/bootstrap-owner', authController.bootstrapOwner);

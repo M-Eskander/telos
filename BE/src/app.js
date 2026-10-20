@@ -19,14 +19,19 @@ const helmet = require('helmet');
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(helmet()); // Security headers
+app.use(helmet());
+
+// The API budget is counted per signed-in person, not per connection, so a
+// studio working from one address does not lock each other out. Anonymous
+// traffic (signing in) falls back to the address.
+const API_BUDGET = 600;
 const apiRateLimiter = createTokenBucketRateLimiter(['/api/'], {
-  capacity: 150,
-  refillRate: 150 / (15 * 60)
+  capacity: API_BUDGET,
+  refillRate: API_BUDGET / (15 * 60),
+  keyGenerator: (req) => (req.user && req.user.id ? `user:${req.user.id}` : `ip:${req.ip}`)
 });
 
 // Middleware
-app.use(apiRateLimiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -41,6 +46,9 @@ app.use(session(sessionConfig));
 
 app.use(passport.initialize());
 app.use(passport.session());
+
+// Runs after the session so the limiter can tell people apart.
+app.use(apiRateLimiter);
 
 // mount auth router under API base
 app.use('/api/auth', authRouter);
