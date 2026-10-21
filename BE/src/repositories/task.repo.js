@@ -121,6 +121,7 @@ async function findDatedByProject(projectId) {
   if (tasks.length === 0) return [];
 
   await attachAssignees(tasks);
+  await attachDependencies(tasks);
   return tasks;
 }
 
