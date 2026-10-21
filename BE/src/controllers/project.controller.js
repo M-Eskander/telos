@@ -62,6 +62,16 @@ exports.listProjects = async (req, res, next) => {
     }
 };
 
+// What needs this person, across every project they can see.
+exports.getGlobalAttention = async (req, res, next) => {
+    try {
+        const attention = await projectService.globalAttention(req.user);
+        return res.json({ ok: true, attention });
+    } catch (err) {
+        next(err);
+    }
+};
+
 // The work that needs attention in a project.
 exports.getAttention = async (req, res, next) => {
     try {

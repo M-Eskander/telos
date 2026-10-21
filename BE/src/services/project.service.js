@@ -51,6 +51,51 @@ async function removeProjectMember(projectId, userId) {
     return projectRepo.removeProjectMember(projectId, userId);
 }
 
+// The projects a person can see, with their permissions resolved.
+async function listVisibleProjects(user) {
+    const all = await projectRepo.listProjects();
+    if (user.isOwner === true) {
+        return all.map(project => ({ ...project, permissions: ['*'] }));
+    }
+    const pdpService = require('./pdp.service');
+    const resolved = await Promise.all(all.map(async (project) => {
+        const permissions = await pdpService.getEffectivePermissions(user.id, user.roles || [], {
+            resourceId: project.id,
+            resourceType: 'project',
+            ownerId: project.created_by
+        });
+        return { ...project, permissions };
+    }));
+    return resolved.filter(project => project.permissions.includes('read:project'));
+}
+
+// What needs this person, across every project they can see.
+async function globalAttention(user) {
+    const projects = await listVisibleProjects(user);
+    const buckets = { overdue: [], due_soon: [], unassigned: [], stale: [], blocked: [] };
+    for (const project of projects) {
+        const viewOwn = project.permissions.includes('view_own:task');
+        const attention = await projectAttention(project.id, {
+            userId: user.id,
+            viewAll: !viewOwn,
+            onlyMine: viewOwn
+        });
+        for (const key of Object.keys(buckets)) {
+            for (const item of attention[key]) {
+                buckets[key].push({
+                    ...item,
+                    project_id: project.id,
+                    project_name: project.name
+                });
+            }
+        }
+    }
+    const bySeverity = (a, b) => (b.schedule?.severity || 0) - (a.schedule?.severity || 0);
+    for (const key of Object.keys(buckets)) buckets[key].sort(bySeverity);
+    buckets.projects = projects.length;
+    return buckets;
+}
+
 // A health summary per project, for the portfolio view.
 async function listProjectSummaries(projectIds, options = {}) {
   if (!projectIds.length) return new Map();
@@ -129,5 +174,7 @@ module.exports = {
     assignProjectMember,
     removeProjectMember,
     listProjectSummaries,
-    projectAttention
+    projectAttention,
+    listVisibleProjects,
+    globalAttention
 };

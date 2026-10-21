@@ -11,6 +11,7 @@ const redisClient = require('./redis/client');
 const passport = require('./middleware/auth.middleware');
 const authRouter = require('./routes/auth.router');
 const metaRouter = require('./routes/meta.router');
+const attentionRouter = require('./routes/attention.router');
 const projectRouter = require('./routes/project.router');
 const accessControlRouter = require('./routes/accessControl.router');
 const startServer = require('./utils/startServer');
@@ -54,6 +55,7 @@ app.use(apiRateLimiter);
 // mount auth router under API base
 app.use('/api/auth', authRouter);
 app.use('/api/meta', metaRouter);
+app.use('/api/attention', attentionRouter);
 app.use('/api/projects', projectRouter);
 app.use('/api/admin', accessControlRouter);
 // Environment variables
