@@ -141,6 +141,9 @@ function validateTaskData(data, existingTask = null) {
   if (data.weight !== undefined && !isValidWeight(data.weight)) {
     throw invalidTask(`Task weight must be a number from ${WEIGHT_MIN} to ${WEIGHT_MAX}`);
   }
+  if (data.is_milestone !== undefined && typeof data.is_milestone !== 'boolean') {
+    throw invalidTask('is_milestone must be true or false');
+  }
   if (data.parent_task_id !== undefined && data.parent_task_id !== null &&
       (!Number.isInteger(Number(data.parent_task_id)) || Number(data.parent_task_id) < 1)) {
     throw invalidTask('parent_task_id must be a positive integer');
@@ -347,7 +350,8 @@ async function updateTask(id, data, projectId = null, options = {}) {
       progress: data.progress,
       weight: data.weight,
       start_date: data.start_date,
-      end_date: data.end_date
+      end_date: data.end_date,
+      is_milestone: data.is_milestone
     };
 
     Object.keys(allowedUpdates).forEach(
@@ -491,12 +495,13 @@ async function bulkUpdateTasks(projectId, ids, data, options = {}) {
           throw taskAccessError('TASK_PROGRESS_ONLY', 'You can only update progress for these tasks');
         }
       }
-      if (Object.prototype.hasOwnProperty.call(data, 'progress')) {
+      if (Object.prototype.hasOwnProperty.call(data, 'progress')
+        || Object.prototype.hasOwnProperty.call(data, 'weight')) {
         const children = await countChildren(trx, task.id);
         if (children > 0) {
           throw taskAccessError(
             'TASK_PROGRESS_CALCULATED',
-            'Progress for this task is calculated from its subtasks'
+            'Progress and weight for this task are calculated from its subtasks'
           );
         }
       }
