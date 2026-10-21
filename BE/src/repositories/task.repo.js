@@ -40,10 +40,28 @@ function nestTasks(tasks) {
     if (parent) parent.subtasks.push(node);
     else roots.push(node);
   }
-  const byId = (a, b) => Number(a.id) - Number(b.id);
+  // Siblings keep their deliberate order; the position column decides it.
+  const byId = (a, b) => (Number(a.position) || 0) - (Number(b.position) || 0) || Number(a.id) - Number(b.id);
   for (const node of nodes.values()) node.subtasks.sort(byId);
   roots.sort(byId);
   return roots;
+}
+
+// A task depends on the tasks it cannot start before.
+async function attachDependencies(tasks) {
+  if (tasks.length === 0) return tasks;
+  const rows = await knex('task_dependencies')
+    .whereIn('task_id', tasks.map(task => task.id))
+    .select('task_id', 'depends_on_id');
+  const byTask = new Map();
+  for (const row of rows) {
+    if (!byTask.has(row.task_id)) byTask.set(row.task_id, []);
+    byTask.get(row.task_id).push(row.depends_on_id);
+  }
+  for (const task of tasks) {
+    task.depends_on = byTask.get(task.id) || [];
+  }
+  return tasks;
 }
 
 async function findById(id) {
@@ -63,7 +81,9 @@ async function findById(id) {
   const subtree = find(tree);
   if (!subtree) return null;
 
-  await attachAssignees([subtree, ...collect(subtree)]);
+  const family = [subtree, ...collect(subtree)];
+  await attachAssignees(family);
+  await attachDependencies(family);
   return subtree;
 }
 
@@ -84,6 +104,7 @@ async function findByProject(projectId) {
   const tasks = await knex('tasks').where({ project_id: projectId }).select('*');
   if (tasks.length === 0) return [];
   await attachAssignees(tasks);
+  await attachDependencies(tasks);
   return nestTasks(tasks);
 }
 
@@ -131,5 +152,6 @@ module.exports = {
   findDatedByProject,
   update,
   remove,
-  setAssignees
+  setAssignees,
+  attachDependencies
 };

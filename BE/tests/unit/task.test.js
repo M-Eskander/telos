@@ -619,7 +619,10 @@ jest.mock('../../src/controllers/task.controller', () => ({
   create: (req, res) => res.status(201).json({ success: true, data: { id: 1, title: req.body.title } }),
   getAllForProject: (req, res) => res.status(200).json({ success: true, data: [] }),
   update: (req, res) => res.status(200).json({ success: true, data: { id: req.params.id, ...req.body } }),
-  remove: (req, res) => res.status(200).json({ success: true, message: 'Task deleted successfully' })
+  remove: (req, res) => res.status(200).json({ success: true, message: 'Task deleted successfully' }),
+  move: (req, res) => res.status(200).json({ success: true, data: { id: req.params.id } }),
+  bulk: (req, res) => res.status(200).json({ success: true, data: [] }),
+  setDependencies: (req, res) => res.status(200).json({ success: true, data: { id: req.params.id } })
 }));
 
 app.use('/api/projects/:projectId/tasks', taskRoutes);

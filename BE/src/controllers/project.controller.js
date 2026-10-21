@@ -25,9 +25,14 @@ exports.listProjects = async (req, res, next) => {
     try {
         const allProjects = await projectService.listProjects();
         if (req.user.isOwner === true) {
+            const summaries = await projectService.listProjectSummaries(allProjects.map(p => p.id));
             return res.json({
                 ok: true,
-                projects: allProjects.map(project => ({ ...project, permissions: ['*'] }))
+                projects: allProjects.map(project => ({
+                    ...project,
+                    permissions: ['*'],
+                    summary: summaries.get(project.id) || null
+                }))
             });
         }
         const permissions = await Promise.all(allProjects.map(project =>
@@ -40,7 +45,36 @@ exports.listProjects = async (req, res, next) => {
         const projects = allProjects
             .map((project, index) => ({ ...project, permissions: permissions[index] }))
             .filter(project => project.permissions.includes('read:project'));
-        return res.json({ ok: true, projects });
+        const viewOwn = permissions.some(list => list.includes('view_own:task'));
+        const summaries = await projectService.listProjectSummaries(projects.map(p => p.id), {
+            userId: req.user.id,
+            onlyMine: viewOwn
+        });
+        return res.json({
+            ok: true,
+            projects: projects.map(project => ({
+                ...project,
+                summary: summaries.get(project.id) || null
+            }))
+        });
+    } catch (err) {
+        next(err);
+    }
+};
+
+// The work that needs attention in a project.
+exports.getAttention = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        if (!await ensureProjectExists(req, res)) return;
+        const viewOwn = req.user?.isOwner !== true
+            && (req.effectivePermissions || []).includes('view_own:task');
+        const attention = await projectService.projectAttention(id, {
+            userId: req.user?.id,
+            viewAll: !viewOwn,
+            onlyMine: viewOwn
+        });
+        return res.json({ ok: true, attention });
     } catch (err) {
         next(err);
     }

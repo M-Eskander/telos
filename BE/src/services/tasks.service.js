@@ -9,6 +9,7 @@ const {
   flattenDerived,
   projectProgress
 } = require('./taskDerivation.service');
+const { computeSchedule, relativeDay, isoDate } = require('./schedule.service');
 
 function invalidTask(message) {
   const error = new TypeError(message);
@@ -246,14 +247,43 @@ async function createTask(projectId, userId, data) {
   return taskRepo.findById(task.id);
 }
 
+// Every task carries how it is doing against its dates, so the list, the
+// attention view and the portfolio all speak the same language.
+function decorateSchedule(nodes) {
+  const all = [];
+  const walk = (list) => {
+    for (const node of list) {
+      all.push(node);
+      walk(node.subtasks || []);
+    }
+  };
+  walk(nodes);
+  const finished = new Set(
+    all.filter(node => (Number(node.progress) || 0) >= 100).map(node => node.id)
+  );
+  for (const node of all) {
+    const schedule = computeSchedule(node);
+    node.schedule = {
+      state: schedule.state,
+      daysLeft: schedule.daysLeft,
+      severity: schedule.severity
+    };
+    node.due = node.end_date
+      ? { date: isoDate(node.end_date), relative: relativeDay(node.end_date) }
+      : null;
+    node.blocked = (node.depends_on || []).filter(id => !finished.has(id));
+  }
+  return nodes;
+}
+
 async function getProjectTasks(projectId, options = null) {
-  const tasks = await taskRepo.findByProject(projectId);
+  const tasks = decorateSchedule(await taskRepo.findByProject(projectId));
   if (!options || options.viewAll === true) return tasks;
   return filterTasksForAssignee(tasks, options.userId);
 }
 
 async function getProjectTimeline(projectId, options = null) {
-  const tasks = await taskRepo.findDatedByProject(projectId);
+  const tasks = decorateSchedule(await taskRepo.findDatedByProject(projectId));
   if (!options || options.viewAll === true) return tasks;
   return filterTimelineForAssignee(tasks, options.userId);
 }
@@ -325,7 +355,7 @@ async function updateTask(id, data, projectId = null, options = {}) {
     );
 
     if (Object.keys(allowedUpdates).length > 0) {
-      await trx('tasks').where({ id }).update(allowedUpdates);
+      await trx('tasks').where({ id }).update({ ...allowedUpdates, updated_at: new Date() });
     }
 
     if (data.assignee_ids !== undefined) {
@@ -376,6 +406,187 @@ async function deleteTask(id, projectId = null) {
   });
 }
 
+// Moves a task to a new parent and/or a new place among its siblings.
+async function moveTask(id, data, projectId = null, options = {}) {
+  const movedId = await knex.transaction(async trx => {
+    const taskQuery = trx('tasks').where({ id });
+    if (projectId !== null && projectId !== undefined) taskQuery.andWhere({ project_id: projectId });
+    const task = await taskQuery.first();
+    if (!task) return null;
+
+    const parentId = data.parent_task_id === undefined
+      ? task.parent_task_id
+      : (data.parent_task_id === null ? null : Number(data.parent_task_id));
+
+    if (parentId !== null) {
+      if (!Number.isInteger(parentId) || parentId < 1) {
+        throw invalidTask('parent_task_id must be a positive integer');
+      }
+      if (parentId === task.id) {
+        throw invalidTask('A task cannot be its own parent');
+      }
+      const parent = await trx('tasks').where({ id: parentId, project_id: task.project_id }).first();
+      if (!parent) throw invalidTask('Parent task must belong to this project');
+      // Walking up from the new parent must not meet the task again.
+      let cursor = parent;
+      const seen = new Set();
+      while (cursor && cursor.parent_task_id) {
+        if (cursor.parent_task_id === task.id) {
+          throw invalidTask('A task cannot be moved under its own subtask');
+        }
+        if (seen.has(cursor.id)) break;
+        seen.add(cursor.id);
+        cursor = await trx('tasks').where({ id: cursor.parent_task_id }).first();
+      }
+    }
+
+    const siblings = await trx('tasks')
+      .where({ project_id: task.project_id })
+      .where({ parent_task_id: parentId })
+      .whereNot({ id: task.id })
+      .orderBy('position')
+      .orderBy('id');
+    const index = Number.isInteger(data.position)
+      ? Math.max(0, Math.min(data.position, siblings.length))
+      : siblings.length;
+    siblings.splice(index, 0, task);
+
+    for (const [order, sibling] of siblings.entries()) {
+      await trx('tasks').where({ id: sibling.id }).update({
+        parent_task_id: parentId,
+        position: order + 1,
+        updated_at: new Date()
+      });
+    }
+
+    await recalculateProject(task.project_id, trx);
+    return task.id;
+  });
+  // The read happens after the transaction, so it never waits on its own lock.
+  return movedId ? taskRepo.findById(movedId) : null;
+}
+
+// Applies the same change to many tasks at once.
+async function bulkUpdateTasks(projectId, ids, data, options = {}) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw invalidTask('Choose at least one task');
+  }
+  const unique = [...new Set(ids.map(Number).filter(id => Number.isInteger(id) && id > 0))];
+  const changed = await knex.transaction(async trx => {
+    const tasks = await trx('tasks').where({ project_id: projectId }).whereIn('id', unique);
+    if (tasks.length === 0) return [];
+
+    const canManageTasks = options.canManageTasks !== false;
+    const userId = options.userId || null;
+
+    for (const task of tasks) {
+      if (!canManageTasks) {
+        const assigned = await trx('task_assignment')
+          .where({ task_id: task.id, user_id: userId })
+          .first();
+        if (!assigned) {
+          throw taskAccessError('TASK_NOT_ASSIGNED', 'You can only update tasks assigned to you');
+        }
+        if (Object.keys(data).some(key => key !== 'progress')) {
+          throw taskAccessError('TASK_PROGRESS_ONLY', 'You can only update progress for these tasks');
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(data, 'progress')) {
+        const children = await countChildren(trx, task.id);
+        if (children > 0) {
+          throw taskAccessError(
+            'TASK_PROGRESS_CALCULATED',
+            'Progress for this task is calculated from its subtasks'
+          );
+        }
+      }
+    }
+
+    // A bulk edit does not need a title: only the fields being changed matter.
+    validateTaskData(data, {});
+    const allowed = {};
+    for (const key of ['title', 'description', 'progress', 'weight', 'start_date', 'end_date']) {
+      if (data[key] !== undefined) allowed[key] = data[key];
+    }
+    if (Object.keys(allowed).length > 0) {
+      await trx('tasks')
+        .where({ project_id: projectId })
+        .whereIn('id', tasks.map(task => task.id))
+        .update({ ...allowed, updated_at: new Date() });
+    }
+
+    if (data.assignee_ids !== undefined) {
+      const assigneeIds = await getActiveAssigneeIds(trx, projectId, data.assignee_ids);
+      await trx('task_assignment')
+        .whereIn('task_id', tasks.map(task => task.id))
+        .del();
+      if (assigneeIds.length > 0) {
+        const records = [];
+        for (const task of tasks) {
+          for (const uid of assigneeIds) records.push({ task_id: task.id, user_id: uid });
+        }
+        await trx('task_assignment').insert(records);
+      }
+    }
+
+    await recalculateProject(projectId, trx);
+    return tasks.map(task => task.id);
+  });
+  return changed ? taskRepo.findByProject(projectId) : [];
+}
+
+// Sets the tasks a task depends on.
+async function setDependencies(id, dependsOn, projectId = null) {
+  if (!Array.isArray(dependsOn)) {
+    throw invalidTask('depends_on must be an array of task IDs');
+  }
+  const unique = [...new Set(dependsOn.map(Number).filter(value => Number.isInteger(value) && value > 0))];
+  const dependencyId = await knex.transaction(async trx => {
+    const taskQuery = trx('tasks').where({ id });
+    if (projectId !== null && projectId !== undefined) taskQuery.andWhere({ project_id: projectId });
+    const task = await taskQuery.first();
+    if (!task) return null;
+    if (unique.includes(task.id)) throw invalidTask('A task cannot depend on itself');
+
+    if (unique.length) {
+      const others = await trx('tasks').where({ project_id: task.project_id }).whereIn('id', unique);
+      if (others.length !== unique.length) {
+        throw invalidTask('Every dependency must belong to this project');
+      }
+      // A dependency must not depend on this task, directly or in a chain.
+      const reaches = async (fromId, targetId) => {
+        const queue = [fromId];
+        const seen = new Set();
+        while (queue.length) {
+          const current = queue.shift();
+          if (seen.has(current)) continue;
+          seen.add(current);
+          if (current === targetId) return true;
+          const rows = await trx('task_dependencies').where({ task_id: current }).select('depends_on_id');
+          for (const row of rows) queue.push(row.depends_on_id);
+        }
+        return false;
+      };
+      for (const dependency of unique) {
+        if (await reaches(dependency, task.id)) {
+          throw invalidTask('That would create a circular dependency');
+        }
+      }
+    }
+
+    await trx('task_dependencies').where({ task_id: task.id }).del();
+    if (unique.length) {
+      await trx('task_dependencies').insert(unique.map(dependency => ({
+        task_id: task.id,
+        depends_on_id: dependency
+      })));
+    }
+    await trx('tasks').where({ id: task.id }).update({ updated_at: new Date() });
+    return task.id;
+  });
+  return dependencyId ? taskRepo.findById(dependencyId) : null;
+}
+
 // Recalculates every derived value in a project: task weight, priority,
 // status and progress, plus the project progress.
 async function recalculateProject(projectId, trx) {
@@ -418,5 +629,9 @@ module.exports = {
   getProjectTimeline,
   updateTask,
   deleteTask,
+  moveTask,
+  bulkUpdateTasks,
+  setDependencies,
+  decorateSchedule,
   recalculateProject
 };

@@ -14,6 +14,7 @@ router.get('/:id/available-people', checkPerm('manage_team', 'project'), project
 router.put('/:id/members/:userId', checkPerm('manage_team', 'project'), projectController.assignMember);
 router.delete('/:id/members/:userId', checkPerm('manage_team', 'project'), projectController.removeMember);
 router.get('/:id/timeline', checkPerm('read:task', 'project'), projectController.getProjectTimeline);
+router.get('/:id/attention', checkPerm('read:task', 'project'), projectController.getAttention);
 router.get('/:id', checkPerm('read:project', 'project'), projectController.getProjectById);
 router.patch('/:id', checkPerm('update:project', 'project'), projectController.updateProject);
 router.delete('/:id', checkPerm('delete:project', 'project'), projectController.deleteProject);
