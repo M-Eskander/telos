@@ -15,11 +15,12 @@ function readNewPassword(body) {
 
 function serializeRoleAssignments(roles) {
   return (roles || []).map(role => typeof role === 'string'
-    ? { name: role, resourceType: null, resourceId: null }
+    ? { name: role, resourceType: null, resourceId: null, accessPreset: null }
     : {
       name: role.name,
       resourceType: role.resourceType || null,
-      resourceId: role.resourceId || null
+      resourceId: role.resourceId || null,
+      accessPreset: role.accessPreset || null
     });
 }
 

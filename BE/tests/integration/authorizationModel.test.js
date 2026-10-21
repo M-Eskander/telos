@@ -225,6 +225,7 @@ describe('Owner-managed authorization model', () => {
     expect(managerLogin.body.user.roles).toEqual(['project-manager']);
     expect(managerLogin.body.user.roleAssignments).toEqual([{
       name: 'project-manager',
+      accessPreset: null,
       resourceType: 'project',
       resourceId: firstProject.body.project.id
     }]);

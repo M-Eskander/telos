@@ -71,17 +71,21 @@ describe('User-role repository', () => {
     const select = jest.fn().mockResolvedValue(assignments);
     const where = jest.fn().mockReturnThis();
     const join = jest.fn().mockReturnThis();
-    knex.mockReturnValue({ join, where, select });
+    knex.mockReturnValue({ join, where, whereIn: jest.fn().mockReturnThis(), select });
 
     await expect(userRoleRepo.getRolesForUser(7)).resolves.toEqual(['viewer', 'manager']);
 
     const query = {
       join: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      whereIn: jest.fn().mockReturnThis(),
       select: jest.fn().mockResolvedValue(assignments)
     };
     knex.mockReturnValue(query);
-    await expect(userRoleRepo.getRoleAssignmentsForUser(7)).resolves.toEqual(assignments);
+    await expect(userRoleRepo.getRoleAssignmentsForUser(7)).resolves.toEqual([
+      { ...assignments[0], accessPreset: null },
+      { ...assignments[1], accessPreset: null }
+    ]);
     expect(query.join).toHaveBeenCalledWith(
       'roles',
       'user_roles.role_id',
@@ -89,6 +93,7 @@ describe('User-role repository', () => {
     );
     expect(query.where).toHaveBeenCalledWith('user_roles.user_id', 7);
     expect(query.select).toHaveBeenCalledWith(
+      'roles.id as roleId',
       'roles.name',
       'user_roles.resource_type as resourceType',
       'user_roles.resource_id as resourceId'

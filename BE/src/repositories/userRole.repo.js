@@ -27,17 +27,35 @@ async function getRolesForUser(userId, trx) {
   return assignments.map(assignment => assignment.name);
 }
 
+const { PRESET_ATTRIBUTE_NAMES, presetByAttribute } = require('../config/accessPresets');
+
 async function getRoleAssignmentsForUser(userId, trx) {
   const q = trx || knex;
   const rows = await q('user_roles')
     .join('roles', 'user_roles.role_id', 'roles.id')
     .where('user_roles.user_id', userId)
     .select(
+      'roles.id as roleId',
       'roles.name',
       'user_roles.resource_type as resourceType',
       'user_roles.resource_id as resourceId'
     );
-  return rows;
+  // The access level a role carries, so a person can see what it grants.
+  const presets = await q('role_attributes')
+    .join('attributes', 'role_attributes.attribute_id', 'attributes.id')
+    .whereIn('attributes.name', PRESET_ATTRIBUTE_NAMES)
+    .select('role_attributes.role_id as roleId', 'attributes.name as attributeName');
+  const presetByRole = new Map();
+  for (const preset of presets) {
+    const match = presetByAttribute(preset.attributeName);
+    if (match) presetByRole.set(Number(preset.roleId), match.key);
+  }
+  return rows.map((row) => ({
+    name: row.name,
+    resourceType: row.resourceType,
+    resourceId: row.resourceId,
+    accessPreset: presetByRole.get(Number(row.roleId)) || null
+  }));
 }
 
 module.exports = { linkUserRole, unlinkUserRole, getRolesForUser, getRoleAssignmentsForUser };
