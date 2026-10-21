@@ -567,6 +567,37 @@ descriptions also live on the server only:
 A person's role assignments include the access level the role carries
 (`accessPreset`), so a people list can show "Owner-like" under a role name.
 
+### Schedule health, attention and editing
+
+| Method | Route | Required access | Purpose |
+|---|---|---|---|
+| `GET` | `/api/projects/:projectId/attention` | `read:task` on project | The work that needs a person, grouped into `overdue`, `due_soon`, `unassigned`, `stale` and `blocked`. A person who may only see their own work gets only their own tasks. |
+| `PATCH` | `/api/projects/:projectId/tasks/bulk` | `update:task` on project | Applies one change to many tasks: `{ ids: [...], title?, description?, progress?, weight?, start_date?, end_date?, assignee_ids? }`. Only the fields sent are changed. |
+| `PATCH` | `/api/projects/:projectId/tasks/:id/move` | `update:task` on project | Moves a task to a new parent and/or a new position among its siblings: `{ parent_task_id, position }`. Refuses to create a cycle. |
+| `PUT` | `/api/projects/:projectId/tasks/:id/dependencies` | `update:task` on project | Sets the tasks a task waits on: `{ depends_on: [ids] }`. Refuses self-dependencies and cycles. |
+
+Every task carries its schedule state and a relative due date:
+
+```json
+{
+  "title": "Production : Pre-Alpha",
+  "progress": 11,
+  "weight": 1.0,
+  "position": 1,
+  "is_milestone": false,
+  "updated_at": "2026-10-20T12:36:14.000Z",
+  "depends_on": [],
+  "schedule": { "state": "at_risk", "daysLeft": 10, "severity": 2 },
+  "due": { "date": "2026-10-31", "relative": "in 10 days" },
+  "blocked": []
+}
+```
+
+The states are `done`, `overdue`, `due_soon`, `at_risk`, `not_started`,
+`on_track` and `no_date`. A task's weight, progress, priority and status are
+derived, so a bulk edit that tries to set the weight or progress of a task
+with subtasks is rejected with `400`.
+
 ### Tree responses and progress
 
 `GET /api/projects/:projectId/tasks` returns root tasks with a `subtasks`
