@@ -1,6 +1,7 @@
 const request = require('supertest');
 const app = require('../../src/app');
 const { taskRules } = require('../../src/config/taskRules');
+const { ACCESS_PRESETS } = require('../../src/config/accessPresets');
 const {
   priorityForWeight,
   statusForProgress,
@@ -45,5 +46,24 @@ describe('Published task rules', () => {
   test('the rules are versioned so a client can spot a stale copy', () => {
     expect(taskRules().version).toEqual(expect.any(String));
     expect(taskRules().version.length).toBeGreaterThan(0);
+  });
+
+  test('the access presets are published with their labels', async () => {
+    const response = await request(app).get('/api/meta/access-presets');
+    expect(response.status).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(response.body.presets).toHaveLength(4);
+    for (const preset of response.body.presets) {
+      expect(preset).toEqual(expect.objectContaining({
+        key: expect.any(String),
+        attribute: expect.any(String),
+        label: expect.any(String),
+        description: expect.any(String)
+      }));
+    }
+    // The published list matches the server's own definition.
+    expect(response.body.presets.map(preset => preset.key)).toEqual(
+      Object.values(ACCESS_PRESETS).map(preset => preset.key)
+    );
   });
 });

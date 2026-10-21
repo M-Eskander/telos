@@ -9,6 +9,7 @@ const {
   PRIORITIES,
   STATUSES
 } = require('./taskDerivation');
+const { ACCESS_PRESETS } = require('./accessPresets');
 
 // Bumped whenever the rules change, so a client can tell a cached copy is
 // out of date.
@@ -41,4 +42,18 @@ function taskRules() {
   };
 }
 
-module.exports = { taskRules, RULES_VERSION, WEIGHT_STEP };
+// The access levels a role can be created with, published for the same
+// reason: the labels and descriptions live on the server only.
+function accessPresets() {
+  return {
+    version: RULES_VERSION,
+    presets: Object.values(ACCESS_PRESETS).map((preset) => ({
+      key: preset.key,
+      attribute: preset.attribute,
+      label: preset.label,
+      description: preset.description
+    }))
+  };
+}
+
+module.exports = { taskRules, accessPresets, RULES_VERSION, WEIGHT_STEP };

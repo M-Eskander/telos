@@ -557,6 +557,16 @@ five minutes; `rules.version` changes whenever the rules change, so a cached
 copy can be detected as stale. The server remains the only place the rules are
 defined.
 
+The access levels are published the same way, so their labels and
+descriptions also live on the server only:
+
+| Method | Route | Success response |
+|---|---|---|
+| `GET` | `/api/meta/access-presets` | `{ ok: true, version, presets: [{ key, attribute, label, description }] }`. |
+
+A person's role assignments include the access level the role carries
+(`accessPreset`), so a people list can show "Owner-like" under a role name.
+
 ### Tree responses and progress
 
 `GET /api/projects/:projectId/tasks` returns root tasks with a `subtasks`

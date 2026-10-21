@@ -17,10 +17,21 @@ async function listPeople() {
     .join('roles', 'user_roles.role_id', 'roles.id')
     .select(
       'user_roles.user_id',
+      'roles.id as roleId',
       'roles.name',
       'user_roles.resource_type as resourceType',
       'user_roles.resource_id as resourceId'
     );
+  // Which built-in access level a role carries, so a person list can show it.
+  const presetRows = await knex('role_attributes')
+    .join('attributes', 'role_attributes.attribute_id', 'attributes.id')
+    .whereIn('attributes.name', PRESET_ATTRIBUTE_NAMES)
+    .select('role_attributes.role_id as roleId', 'attributes.name as attributeName');
+  const presetByRole = new Map();
+  for (const row of presetRows) {
+    const preset = presetByAttribute(row.attributeName);
+    if (preset) presetByRole.set(Number(row.roleId), preset.key);
+  }
   const contracts = await knex('contracts').orderBy('start_date', 'desc').orderBy('id', 'desc');
   const ownerAccount = await knex('owner_account').where({ id: 1 }).first();
   const rolesByUser = new Map();
@@ -33,7 +44,8 @@ async function listPeople() {
     assignmentsByUser.get(assignment.user_id).push({
       name: assignment.name,
       resourceType: assignment.resourceType,
-      resourceId: assignment.resourceId
+      resourceId: assignment.resourceId,
+      accessPreset: presetByRole.get(Number(assignment.roleId)) || null
     });
   }
   for (const contract of contracts) {

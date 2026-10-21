@@ -1,5 +1,5 @@
 const express = require('express');
-const { taskRules } = require('../config/taskRules');
+const { taskRules, accessPresets } = require('../config/taskRules');
 
 const router = express.Router();
 
@@ -9,6 +9,13 @@ const router = express.Router();
 router.get('/task-rules', (req, res) => {
   res.set('Cache-Control', 'public, max-age=300');
   return res.json({ ok: true, rules: taskRules() });
+});
+
+// The access levels a role can be created with, so the labels and
+// descriptions have a single home on the server.
+router.get('/access-presets', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=300');
+  return res.json({ ok: true, ...accessPresets() });
 });
 
 module.exports = router;
