@@ -545,6 +545,18 @@ calculated from them, and a `PATCH` that tries to set them returns `400`
 (`Progress for this task is calculated from its subtasks`). Subtasks can have
 subtasks of their own, and the rules apply at every level.
 
+**The rules are published by the server**, so no client keeps its own copy:
+
+| Method | Route | Success response |
+|---|---|---|
+| `GET` | `/api/meta/task-rules` | `{ ok: true, rules: {...} }` with `version`, `weight` (`min`, `max`, `step`), `bands` (`priority`, `min`, `max`), `priorities`, `statuses` and the `status` thresholds. |
+
+A client uses these to preview the priority a weight produces and the status a
+progress value produces while the person types. The response is cached for
+five minutes; `rules.version` changes whenever the rules change, so a cached
+copy can be detected as stale. The server remains the only place the rules are
+defined.
+
 ### Tree responses and progress
 
 `GET /api/projects/:projectId/tasks` returns root tasks with a `subtasks`
