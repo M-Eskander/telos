@@ -14,6 +14,7 @@ const metaRouter = require('./routes/meta.router');
 const attentionRouter = require('./routes/attention.router');
 const projectRouter = require('./routes/project.router');
 const studioRouter = require('./routes/studio.router');
+const onlyofficeRouter = require('./routes/onlyoffice.router');
 const meRouter = require('./routes/me.router');
 const accessControlRouter = require('./routes/accessControl.router');
 const startServer = require('./utils/startServer');
@@ -60,6 +61,8 @@ app.use('/api/meta', metaRouter);
 app.use('/api/attention', attentionRouter);
 app.use('/api/projects', projectRouter);
 app.use('/api/projects', studioRouter);
+// Document Server -> backend. Signed tokens replace the browser session.
+app.use('/api/onlyoffice', onlyofficeRouter);
 app.use('/api/me', meRouter);
 app.use('/api/admin', accessControlRouter);
 // Environment variables

@@ -8,6 +8,9 @@ process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'test_session_secret'
 process.env.REDIS_HOST = process.env.REDIS_HOST || 'localhost';
 process.env.REDIS_PORT = process.env.REDIS_PORT || '6379';
 process.env.CONTRACT_STORAGE_DIR = path.resolve(__dirname, '../.test-contract-storage');
+process.env.ONLYOFFICE_JWT_SECRET = 'test_onlyoffice_jwt_secret_0123456789';
+process.env.ONLYOFFICE_BACKEND_URL = 'http://backend:5000';
+process.env.ONLYOFFICE_INTERNAL_URL = 'http://onlyoffice';
 
 // If using the real Redis instance (e.g. Docker container started with
 // `--requirepass password`), provide the password here for tests. This

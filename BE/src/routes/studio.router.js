@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const studioController = require('../controllers/studio.controller');
+const onlyofficeController = require('../controllers/onlyoffice.controller');
 const sheetUpload = require('../middleware/sheetUpload.middleware');
 const templateUpload = require('../middleware/templateUpload.middleware');
 const { checkPerm, requireAuthenticated } = require('../middleware/auth.middleware');
@@ -13,6 +14,9 @@ router.post('/:id/sheets/import', checkPerm('manage_team', 'project'), sheetUplo
 router.put('/:id/sheets/:sheetId', checkPerm('manage_team', 'project'), studioController.saveSheet);
 router.delete('/:id/sheets/:sheetId', checkPerm('manage_team', 'project'), studioController.deleteSheet);
 router.get('/:id/sheets/export', checkPerm('read:project', 'project'), studioController.exportSheets);
+// The full editor is a manager's tool: it can change every cell and the file
+// itself, so it uses the same permission as importing a new workbook.
+router.get('/:id/onlyoffice/config', checkPerm('manage_team', 'project'), onlyofficeController.config);
 
 // --- the contract layout and the contracts made from it ------------------
 router.get('/:id/contract-template', checkPerm('read:project', 'project'), studioController.getTemplate);
