@@ -174,6 +174,7 @@ async function getPersonAccessDetails(userId) {
 
 async function createPerson(data, contractFile) {
   const password = await bcrypt.hash(data.password, 10);
+  const skipVerification = data.skip_verification === true;
   const created = await contractService.createPersonWithContract(
     contractFile,
     {
@@ -191,6 +192,9 @@ async function createPerson(data, contractFile) {
         location: data.location || null,
         age: data.age === undefined ? null : data.age,
         is_active: data.is_active === undefined ? true : data.is_active,
+        // Someone who joins while the studio is still being tested does not
+        // have to open a verification mail before they can work.
+        email_verified_at: skipVerification ? Date.now() : null,
         created_at: new Date()
       });
       const user = await trx('users').where({ id }).first();
@@ -215,11 +219,15 @@ async function createPerson(data, contractFile) {
   created.user.contracts = [created.contract];
   created.user.hasContract = true;
   let verificationEmail = { sent: false, skipped: false };
-  try {
-    const delivery = await emailVerificationService.sendVerificationEmail(created.user);
-    verificationEmail = { sent: !!delivery.sent, skipped: !!delivery.skipped };
-  } catch (error) {
-    console.error(`Failed to send verification email to ${created.user.email}:`, error.message);
+  if (skipVerification) {
+    verificationEmail = { sent: false, skipped: true, deferred: true };
+  } else {
+    try {
+      const delivery = await emailVerificationService.sendVerificationEmail(created.user);
+      verificationEmail = { sent: !!delivery.sent, skipped: !!delivery.skipped };
+    } catch (error) {
+      console.error(`Failed to send verification email to ${created.user.email}:`, error.message);
+    }
   }
   created.user.verificationEmail = verificationEmail;
   return safePerson(created.user);

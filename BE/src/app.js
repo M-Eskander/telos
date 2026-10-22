@@ -13,6 +13,8 @@ const authRouter = require('./routes/auth.router');
 const metaRouter = require('./routes/meta.router');
 const attentionRouter = require('./routes/attention.router');
 const projectRouter = require('./routes/project.router');
+const studioRouter = require('./routes/studio.router');
+const meRouter = require('./routes/me.router');
 const accessControlRouter = require('./routes/accessControl.router');
 const startServer = require('./utils/startServer');
 const createTokenBucketRateLimiter = require('./middleware/rateLimit.middleware');
@@ -57,6 +59,8 @@ app.use('/api/auth', authRouter);
 app.use('/api/meta', metaRouter);
 app.use('/api/attention', attentionRouter);
 app.use('/api/projects', projectRouter);
+app.use('/api/projects', studioRouter);
+app.use('/api/me', meRouter);
 app.use('/api/admin', accessControlRouter);
 // Environment variables
 const PORT = process.env.PORT || 5000;

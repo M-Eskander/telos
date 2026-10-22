@@ -18,17 +18,19 @@ Written so we can pick it up cold tomorrow.
 | # | Item | Why it matters | Rough size |
 |---|------|----------------|------------|
 | 1 | **Task activity history** | Every task mutation is invisible today. A `task_activity` table written through on create/edit/move/delete, a per-task "History" panel, and a project-wide activity stream. This is the trust layer — without it nobody knows who moved a deadline. | Medium |
-| 2 | **Project-scoped role assignment on the Team page** | The access presets exist (Owner-like, Project manager, Team member, Low-access member) and roles are created globally in `/access`, but a project manager cannot give a teammate a role *for their own project*. Needs a `PUT /api/projects/:id/members/:userId/role` endpoint plus a role dropdown per member on the Team page. | Medium |
-| 3 | **Keyboard-first workflow** | The command palette (⌘K) navigates but does not act. Add a visible row cursor, Enter to open, Space to select, and real commands ("assign to me", "mark done", "new task in *Production: Alpha*"). | Medium |
-| 4 | **Drag to set progress** | Progress is a number you type. A pencil stroke you drag along the bar would be the most tactile thing in the paper world. | Small–Medium |
-| 5 | **Phase strip / production board** | One row per root task with its rolled-up progress, dates and risk — the "where is this project" view, one screen above the task tree. | Small |
-| 6 | **Per-person load** | On the Team page: how many tasks each person carries, how much progress they are responsible for, who is overloaded. | Small |
-| 7 | **Comments and @mentions** | The single biggest missing collaboration feature. | Large |
-| 8 | **Saved views** | "My tasks", "Late", "Unassigned", "This phase" as one-click chips instead of re-filtering by hand. | Small |
-| 9 | **A "Today" view** | The sidebar assistant says something useful, but there is no page behind it: what is due today, what is late for *me*. | Medium |
-| 10 | **Paper-world craft pass** | Hand-drawn underline progress bar, a tilted "DONE" stamp, sticky notes for descriptions, torn paper between sections. | Small, iterative |
-| 11 | **Undo everywhere** | Only the timeline drag has undo. Every mutation should be reversible for a few seconds. | Medium |
-| 12 | **Offline tolerance** | The app dies mid-edit if the network drops. Optimistic writes + a retry queue. | Large |
+| 2 | **A formula engine for the project sheet** | The sheet editor edits values, but the calculator (SUMIF, VLOOKUP, IF, TEXT across sheets) still recalculates in Google Sheets or Excel. Evaluating the formulas in the app would let the contracts be made from live numbers. | Large |
+| 3 | **Google Sheets sync** | Import from a Google Sheet by URL and write changes back, so the sheet stays the single source of truth. Needs the Sheets API and a per-project OAuth connection. | Medium |
+| 4 | **Project-scoped role assignment on the Team page** | The access presets exist (Owner-like, Project manager, Team member, Low-access member) and roles are created globally in `/access`, but a project manager cannot give a teammate a role *for their own project*. Needs a `PUT /api/projects/:id/members/:userId/role` endpoint plus a role dropdown per member on the Team page. | Medium |
+| 5 | **Keyboard-first workflow** | The command palette (⌘K) navigates but does not act. Add a visible row cursor, Enter to open, Space to select, and real commands ("assign to me", "mark done", "new task in *Production: Alpha*"). | Medium |
+| 6 | **Drag to set progress** | Progress is a number you type. A pencil stroke you drag along the bar would be the most tactile thing in the paper world. | Small–Medium |
+| 7 | **Phase strip / production board** | One row per root task with its rolled-up progress, dates and risk — the "where is this project" view, one screen above the task tree. | Small |
+| 8 | **Per-person load** | The "Who works on what" tab shows the load already; give it the same treatment as the revenue calculator (hours, points, share of the project). | Small |
+| 9 | **Comments and @mentions** | The single biggest missing collaboration feature. | Large |
+| 10 | **Saved views** | "My tasks", "Late", "Unassigned", "This phase" as one-click chips instead of re-filtering by hand. | Small |
+| 11 | **A "Today" view** | The home page shows the week; make "Today" a filter on it. | Small |
+| 12 | **Paper-world craft pass** | Hand-drawn underline progress bar, a tilted "DONE" stamp, sticky notes for descriptions, torn paper between sections. | Small, iterative |
+| 13 | **Undo everywhere** | Only the timeline drag has undo. Every mutation should be reversible for a few seconds. | Medium |
+| 14 | **Offline tolerance** | The app dies mid-edit if the network drops. Optimistic writes + a retry queue. | Large |
 
 ## 2. Rules we agreed on (do not break these)
 
@@ -67,6 +69,48 @@ Written so we can pick it up cold tomorrow.
   checkboxes are drawn by the app instead of the OS, and they sit at the same
   22px as the fold button beside them. The checkbox also no longer takes its own
   grid column, which used to mangle the row.
+- **The graph ruling behind the timeline stood still.** The ruling was painted
+  on the scroll container, so the lines stayed while the bars slid. It is drawn
+  on the track now, with a step that matches the ticks, so the paper travels
+  with the plan.
+- **The checkbox and the fold button sat a pixel apart.** Both are 22px and in
+  the same flex row now.
+
+### The paper of the studio
+
+- **Terms and contracts are two different things.** The terms are the
+  studio-wide paper every person signs to come aboard (per person, on the
+  person page). A contract belongs to a project and is made from that
+  project's layout and the person's row in the project sheet.
+- **The end date is optional** on both, for terms and for contracts.
+- **A project keeps its own spreadsheet.** Import `.xlsx` / `.xls` / `.csv`
+  (the revenue share calculator works as it is), edit the cells in the app,
+  export it back out. Formulas that came with the file are kept, and their
+  cells are tinted so you can see what the calculator owns.
+- **A project keeps its own contract layout.** The text of the contract with
+  `{{Name}}`, `{{Department}}`, `{{Role}}`, `{{Hours}}`, `{{Share}}`,
+  `{{Project}}`, `{{Studio}}`, `{{StartDate}}` and `{{EndDate}}` in it. The
+  default layout is the studio's project contract, ready to edit.
+- **Contracts are made from the sheet**, the same way the studio's Apps Script
+  did it: the Team sheet gives the name, department, roles and weekly hours
+  (roles joined with " & "), the Summary sheet gives the base revenue share,
+  and people with no hours are left out (and counted).
+- **A person can join without verifying.** "Do not ask for email verification
+  yet" on the add-person form marks the account as verified and sends no mail,
+  so the whole team can be added while the studio is still being tested.
+
+### The studio day to day
+
+- **A home page** (`/`) — everything assigned to you across every project, the
+  week ahead, and your projects.
+- **A meetings page** (`/meetings`) — the meetings you are part of this week,
+  what is coming, and every meeting in the studio.
+- **Meetings are planned inside a project**: a name, a first date, a time, a
+  length, how often it repeats (once, daily, weekly with chosen days, monthly
+  on a chosen day), when it stops, and who comes. Everyone invited sees it on
+  their meetings page.
+- **"Who works on what"** — a project tab with every person, their open work,
+  and the tasks nobody owns.
 
 ### Found while sweeping
 

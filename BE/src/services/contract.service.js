@@ -1,13 +1,27 @@
 const knex = require('../config/knex');
 const contractStorage = require('./contractStorage.service');
 
-function normalizeDates(startDate, endDate) {
-  const isDate = value => typeof value === 'string' &&
-    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidDate(value) {
+  return typeof value === 'string' &&
+    DATE_PATTERN.test(value) &&
     !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`)) &&
     new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
-  if (!isDate(startDate) || !isDate(endDate)) {
-    throw new TypeError('Contract start_date and end_date must be valid YYYY-MM-DD dates');
+}
+
+// The end date is optional: a contract or a terms acknowledgement can run
+// open-ended. When both are given, the end has to fall on or after the start.
+function normalizeDates(startDate, endDate) {
+  if (!isValidDate(startDate)) {
+    throw new TypeError('Contract start_date must be a valid YYYY-MM-DD date');
+  }
+  const hasEnd = endDate !== undefined && endDate !== null && endDate !== '';
+  if (!hasEnd) {
+    return { start_date: startDate, end_date: null };
+  }
+  if (!isValidDate(endDate)) {
+    throw new TypeError('Contract end_date must be a valid YYYY-MM-DD date');
   }
   if (endDate < startDate) {
     throw new TypeError('Contract end_date must be on or after start_date');
@@ -25,7 +39,7 @@ function publicContract(contract) {
   };
 }
 
-async function insertContract(trx, userId, fileMetadata, dates, terms) {
+async function insertContract(trx, userId, fileMetadata, dates, terms, extra = {}) {
   const [id] = await trx('contracts').insert({
     user_id: userId,
     file_url: 'pending',
@@ -35,7 +49,12 @@ async function insertContract(trx, userId, fileMetadata, dates, terms) {
     storage_key: fileMetadata.storageKey,
     original_name: fileMetadata.originalName,
     mime_type: fileMetadata.mimeType,
-    file_size: fileMetadata.fileSize
+    file_size: fileMetadata.fileSize,
+    kind: extra.kind || 'terms',
+    project_id: extra.project_id || null,
+    template_id: extra.template_id || null,
+    document_data: extra.document_data ? JSON.stringify(extra.document_data) : null,
+    status: extra.status || 'active'
   });
   const fileUrl = `/api/admin/contracts/${id}/file`;
   await trx('contracts').where({ id }).update({ file_url: fileUrl });
@@ -56,7 +75,11 @@ async function withStoredFile(file, operation) {
   }
 }
 
-async function addContract(userId, file, { start_date: startDate, end_date: endDate, terms }) {
+async function addContract(userId, file, {
+  start_date: startDate, end_date: endDate, terms,
+  kind = 'terms', project_id: projectId = null, template_id: templateId = null,
+  document_data: documentData = null
+}) {
   const dates = normalizeDates(startDate, endDate);
   if (terms !== undefined && terms !== null && typeof terms !== 'string') {
     throw new TypeError('Contract terms must be a string');
@@ -68,7 +91,9 @@ async function addContract(userId, file, { start_date: startDate, end_date: endD
       error.code = 'PERSON_NOT_FOUND';
       throw error;
     }
-    const contract = await insertContract(trx, userId, fileMetadata, dates, terms);
+    const contract = await insertContract(trx, userId, fileMetadata, dates, terms, {
+      kind, project_id: projectId, template_id: templateId, document_data: documentData
+    });
     return publicContract(contract);
   }));
 }
@@ -99,7 +124,10 @@ async function createPersonWithContract(file, metadata, createPerson) {
   }
   return withStoredFile(file, fileMetadata => knex.transaction(async trx => {
     const user = await createPerson(trx);
-    const contract = await insertContract(trx, user.id, fileMetadata, dates, metadata.terms);
+    const contract = await insertContract(trx, user.id, fileMetadata, dates, metadata.terms, {
+      kind: metadata.kind || 'terms',
+      project_id: metadata.project_id || null
+    });
     return { user, contract: publicContract(contract) };
   }));
 }
@@ -109,5 +137,6 @@ module.exports = {
   listContractsForUser,
   getContractFile,
   createPersonWithContract,
-  publicContract
+  publicContract,
+  normalizeDates
 };

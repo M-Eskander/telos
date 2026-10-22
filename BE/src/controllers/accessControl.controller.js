@@ -54,6 +54,9 @@ exports.createPerson = async (req, res, next) => {
     if (fields.is_active !== undefined && typeof fields.is_active !== 'boolean') {
       return res.status(400).json({ ok: false, message: 'is_active must be a boolean' });
     }
+    if (fields.skip_verification !== undefined && typeof fields.skip_verification !== 'boolean') {
+      return res.status(400).json({ ok: false, message: 'skip_verification must be a boolean' });
+    }
     if (fields.age !== undefined && fields.age !== null &&
         (!Number.isInteger(fields.age) || fields.age < 0)) {
       return res.status(400).json({ ok: false, message: 'Age must be a non-negative integer' });
