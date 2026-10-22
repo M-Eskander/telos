@@ -114,8 +114,51 @@ Written so we can pick it up cold tomorrow.
 - **SheetJS 0.18.5 was replaced with 0.20.3 from the official SheetJS CDN.**
   The npm build has two high-severity advisories (CVE-2023-30533 prototype
   pollution, CVE-2024-22363 ReDoS) and no npm fix; `npm audit` no longer
-  reports `xlsx`. The remaining high advisories are dev-only (Jest's
-  `update-notifier` chain); production audit is 1 moderate, 0 high.
+  reports `xlsx`. `fflate` was bumped to 0.8.3 for its ZIP64 parse-loop
+  advisory. `npm audit --omit=dev` is clean (0 vulnerabilities); the remaining
+  high advisories are dev-only (Jest's `update-notifier` chain).
+- **Export is the uploaded file, patched.** The original `.xlsx` is kept byte
+  for byte per project (`project_workbooks`, one row per project, 8 MB cap) and
+  saved in the same transaction as the imported sheets. Export opens that
+  package and rewrites only the `<sheetData>` cells whose value or formula
+  moved. Every other part of the file is left alone: `styles.xml`, number
+  formats, column widths, row heights, merges, data-validation dropdowns,
+  conditional formatting, freeze panes and shared formulas. A text edit becomes
+  an inline string; a date stays a serial date; a changed formula becomes a
+  normal formula. If nothing moved, the original bytes come back untouched.
+  The `meta.imported` rows/columns recorded at import are the boundary: cells
+  outside it are never cleared. If the template is missing (legacy sheets,
+  `.xls`/`.csv` imports) or damaged, export falls back to the plain SheetJS
+  workbook rather than failing. The live sheets imported before this change
+  have no stored template yet; re-importing them once is what turns on the
+  styled grid and the faithful export.
+- **A formula edit can rewrite a whole shared group.** Excel stores one
+  shared formula plus offsets. If the master changes, the exporter writes the
+  group as normal formulas, including members outside the quick grid's imported
+  window, using the template's cached values. This is the only case where an
+  export writes cells beyond the one that moved; leaving a dangling shared
+  reference would corrupt the workbook.
+- **Sheet proof (Step 3).** Export tests use a synthetic workbook with a
+  shared formula, a date, a percentage, a merge, a dropdown and a conditional
+  format. They assert that only the moved cells and their dependants change,
+  shared masters survive value edits, new rows inherit the style above, dates
+  and rates keep their formats, and cells outside the imported window stay
+  byte-identical. The real calculator was exported with `Settings!C5`
+  100000 → 120000: `styles.xml` and `sharedStrings.xml` byte-identical, 0
+  formula and 0 number-format differences, `<cols>`/`<mergeCells>`/
+  `<dataValidations>`/`<conditionalFormatting>` unchanged on all six sheets,
+  shared `E6`/`E7` preserved, `calcPr fullCalcOnLoad="1"`, and the file
+  re-imported cleanly. A one-label edit changed exactly one cell across all six
+  sheets. Verified copy:
+  `/home/m-eskander/backups/Telos_Revenue_Share_Calculator-exported-2026-10-22.xlsx`.
+- **The test database enforces SQLite foreign keys.** `knexfile.js` sets
+  `PRAGMA foreign_keys = ON`, so the `project_workbooks → projects` cascade is
+  exercised instead of assumed. The suite is **40 suites / 285 tests**.
+- **Database dumps for the sheet work:**
+  `/home/m-eskander/backups/telos_db-2026-10-22-pre-sheet-meta.sql` (before
+  `project_sheets.meta`) and
+  `/home/m-eskander/backups/telos_db-2026-10-22-pre-workbook-template.sql`
+  (before `project_workbooks`).
 - **The engine speaks the calculator's language.** `COUNTIF`, `SUMIF`,
   `SUMPRODUCT`, `VLOOKUP`, `IF`, `IFERROR`, `OR`, `LEFT`, `TEXT`, `SUM`, `MIN`,
   `MAX`, `AVERAGE`, `COUNT` and the common arithmetic, text and lookup extras.
