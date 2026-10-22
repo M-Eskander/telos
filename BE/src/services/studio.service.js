@@ -39,12 +39,16 @@ async function getTemplate(projectId) {
   return projectContractService.getTemplate(projectId);
 }
 
-async function saveTemplate(projectId, payload, pdfFile) {
-  return projectContractService.saveTemplate(projectId, payload || {}, pdfFile);
+async function saveTemplate(projectId, payload, pdfFile, docxFile) {
+  return projectContractService.saveTemplate(projectId, payload || {}, pdfFile, docxFile);
 }
 
 async function listContracts(projectId) {
   return projectContractService.listContracts(projectId);
+}
+
+async function getContractFile(projectId, contractId, kind) {
+  return projectContractService.getContractFile(projectId, contractId, kind);
 }
 
 async function generateContracts(projectId, payload, actorId) {
@@ -154,6 +158,7 @@ module.exports = {
   getTemplate,
   saveTemplate,
   listContracts,
+  getContractFile,
   generateContracts,
   updateContract,
   deleteContract,

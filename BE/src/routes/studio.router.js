@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const studioController = require('../controllers/studio.controller');
 const sheetUpload = require('../middleware/sheetUpload.middleware');
-const contractUpload = require('../middleware/contractUpload.middleware');
+const templateUpload = require('../middleware/templateUpload.middleware');
 const { checkPerm, requireAuthenticated } = require('../middleware/auth.middleware');
 
 // --- the spreadsheet of a project ----------------------------------------
@@ -16,8 +16,9 @@ router.get('/:id/sheets/export', checkPerm('read:project', 'project'), studioCon
 
 // --- the contract layout and the contracts made from it ------------------
 router.get('/:id/contract-template', checkPerm('read:project', 'project'), studioController.getTemplate);
-router.put('/:id/contract-template', checkPerm('manage_team', 'project'), contractUpload, studioController.saveTemplate);
+router.put('/:id/contract-template', checkPerm('manage_team', 'project'), templateUpload, studioController.saveTemplate);
 router.get('/:id/contracts', checkPerm('read:project', 'project'), studioController.listContracts);
+router.get('/:id/contracts/:contractId/file/:kind', checkPerm('read:project', 'project'), studioController.getContractFile);
 router.post('/:id/contracts/generate', checkPerm('manage_team', 'project'), studioController.generateContracts);
 router.patch('/:id/contracts/:contractId', checkPerm('manage_team', 'project'), studioController.updateContract);
 router.delete('/:id/contracts/:contractId', checkPerm('manage_team', 'project'), studioController.deleteContract);

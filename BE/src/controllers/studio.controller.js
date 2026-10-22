@@ -71,10 +71,28 @@ exports.getTemplate = async (req, res, next) => {
 
 exports.saveTemplate = async (req, res, next) => {
   try {
-    const template = await studioService.saveTemplate(req.params.id, req.body || {}, req.file);
+    const files = req.files || {};
+    const layout = files.layout && files.layout[0] ? files.layout[0] : null;
+    const pdf = files.contract && files.contract[0] ? files.contract[0] : null;
+    const docxFile = layout && String(layout.originalname || '').toLowerCase().endsWith('.docx') ? layout : null;
+    const pdfFile = pdf || (layout && !docxFile ? layout : null);
+    const template = await studioService.saveTemplate(req.params.id, req.body || {}, pdfFile, docxFile);
     return res.json({ ok: true, template });
   } catch (error) {
     return fail(res, error);
+  }
+};
+
+exports.getContractFile = async (req, res, next) => {
+  try {
+    const kind = req.params.kind === 'word' ? 'word' : 'pdf';
+    const file = await studioService.getContractFile(req.params.id, req.params.contractId, kind);
+    if (!file) return res.status(404).json({ ok: false, message: 'That file has not been made yet' });
+    res.setHeader('Content-Type', file.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
+    return res.send(file.buffer);
+  } catch (error) {
+    return next(error);
   }
 };
 

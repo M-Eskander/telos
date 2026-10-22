@@ -1,6 +1,14 @@
 const knex = require('../config/knex');
 const sheetService = require('./sheet.service');
 const contractStorage = require('./contractStorage.service');
+const wordTemplate = require('./wordTemplate.service');
+
+// MySQL hands dates back as Date objects; the app shows days, not timestamps.
+const dateOnly = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+};
 
 // The layout a project starts with. It mirrors the studio's project contract
 // and keeps the placeholders the revenue share calculator fills in.
@@ -106,6 +114,8 @@ async function getTemplate(projectId) {
       name: 'Project Contract',
       body: DEFAULT_TEMPLATE,
       pdf_key: null,
+      docx_key: null,
+      original_docx_name: null,
       is_default: true
     };
   }
@@ -115,13 +125,15 @@ async function getTemplate(projectId) {
     name: template.name,
     body: template.body,
     pdf_key: template.pdf_key,
+    docx_key: template.docx_key,
+    original_docx_name: template.original_docx_name,
     original_name: template.original_name,
     is_default: false
   };
 }
 
-async function saveTemplate(projectId, { name, body, pdfFile }) {
-  if (!body || !String(body).trim()) {
+async function saveTemplate(projectId, { name, body }, pdfFile, docxFile) {
+  if ((!body || !String(body).trim()) && !docxFile && !pdfFile) {
     throw new TypeError('The contract layout cannot be empty');
   }
   const existing = await knex('project_contract_templates')
@@ -130,22 +142,43 @@ async function saveTemplate(projectId, { name, body, pdfFile }) {
     .first();
   let pdfKey = existing ? existing.pdf_key : null;
   let originalName = existing ? existing.original_name : null;
+  let docxKey = existing ? existing.docx_key : null;
+  let originalDocxName = existing ? existing.original_docx_name : null;
   if (pdfFile) {
     const stored = await contractStorage.storeContractFile(pdfFile);
     pdfKey = stored.storageKey;
     originalName = stored.originalName;
   }
+  if (docxFile) {
+    const stored = await contractStorage.storeTemplateFile(docxFile);
+    docxKey = stored.storageKey;
+    originalDocxName = stored.originalName;
+  }
   const payload = {
     name: (name && String(name).trim()) || 'Project Contract',
-    body: String(body),
+    body: body && String(body).trim() ? String(body) : DEFAULT_TEMPLATE,
     pdf_key: pdfKey,
     original_name: originalName,
+    docx_key: docxKey,
+    original_docx_name: originalDocxName,
     updated_at: knex.fn.now()
   };
   if (existing) {
     await knex('project_contract_templates').where({ id: existing.id }).update(payload);
   } else {
     await knex('project_contract_templates').insert({ ...payload, project_id: projectId, created_at: knex.fn.now() });
+  }
+  // A replaced file is no longer referenced by anything.
+  for (const staleKey of [
+    docxFile && existing ? existing.docx_key : null,
+    pdfFile && existing ? existing.pdf_key : null
+  ]) {
+    if (!staleKey) continue;
+    try {
+      await contractStorage.removeContractFile(staleKey);
+    } catch (error) {
+      console.error('Could not remove the replaced layout file:', error.message);
+    }
   }
   return getTemplate(projectId);
 }
@@ -173,6 +206,7 @@ async function generateContracts(projectId, { start_date: startDate, end_date: e
   const members = await knex('users').select('id', 'name');
 
   const made = [];
+  const files = [];
   for (const person of people) {
     const data = {
       Name: person.name,
@@ -204,12 +238,68 @@ async function generateContracts(projectId, { start_date: startDate, end_date: e
     if (existing) {
       await knex('project_contracts').where({ id: existing.id }).update(payload);
       made.push(existing.id);
+      files.push({ id: existing.id, data, oldPdf: existing.pdf_key, oldWord: existing.docx_key });
     } else {
       const [id] = await knex('project_contracts').insert({ ...payload, created_at: knex.fn.now() });
       made.push(id);
+      files.push({ id, data });
     }
   }
-  return { contracts: made, people: people.length, waiting };
+
+  // The Word file of the project, if there is one, becomes the contract of
+  // every person: the values go in, and the PDF comes out of it.
+  let built = { words: 0, pdfs: 0 };
+  if (template.docx_key) {
+    built = await buildDocuments(template, files, project.name);
+  }
+  return { contracts: made, people: people.length, waiting, documents: built.words, pdfs: built.pdfs };
+}
+
+// Fill the Word layout for every person and turn it into a PDF.
+async function buildDocuments(template, files, projectName) {
+  let templateBuffer;
+  try {
+    templateBuffer = await contractStorage.readContractFile(template.docx_key);
+  } catch {
+    return 0;
+  }
+  const safeName = String(projectName || 'Project').replace(/[^\w -]/g, '').trim() || 'Project';
+  const filled = [];
+  for (const file of files) {
+    const buffer = wordTemplate.fillDocx(templateBuffer, file.data);
+    filled.push({ id: file.id, buffer, name: `${safeName} Contract ${file.data.Name}.docx` });
+  }
+  let pdfs = [];
+  try {
+    pdfs = await wordTemplate.docxFilesToPdf(filled.map((file) => ({ buffer: file.buffer, name: file.name })));
+  } catch (error) {
+    console.error('The contract could not be turned into a PDF:', error.message);
+    pdfs = filled.map(() => null);
+  }
+  let words = 0;
+  let pdfCount = 0;
+  for (let index = 0; index < filled.length; index += 1) {
+    const file = filled[index];
+    const pdf = pdfs[index];
+    const storedDocx = await contractStorage.storeGeneratedFile(file.buffer, 'docx');
+    const storedPdf = pdf ? await contractStorage.storeGeneratedFile(pdf, 'pdf') : null;
+    await knex('project_contracts').where({ id: file.id }).update({
+      pdf_key: storedPdf ? storedPdf.storageKey : null,
+      docx_key: storedDocx.storageKey
+    });
+    // The files of the previous version are no longer referenced.
+    for (const oldKey of [file.oldPdf, file.oldWord]) {
+      if (!oldKey) continue;
+      try {
+        await contractStorage.removeContractFile(oldKey);
+      } catch (error) {
+        console.error('Could not remove an old contract file:', error.message);
+      }
+    }
+    words += 1;
+    if (storedPdf) pdfCount += 1;
+  }
+  return { words, pdfs: pdfCount };
 }
 
 async function listContracts(projectId) {
@@ -227,15 +317,37 @@ async function listContracts(projectId) {
       person_name: row.person_name,
       user_id: row.user_id,
       template_id: row.template_id,
-      start_date: row.start_date,
-      end_date: row.end_date,
+      start_date: dateOnly(row.start_date),
+      end_date: dateOnly(row.end_date),
       status: row.status,
       data,
       document: fillTemplate(template.body, data),
+      has_pdf: Boolean(row.pdf_key),
+      has_word: Boolean(row.docx_key),
       created_at: row.created_at,
       updated_at: row.updated_at
     };
   });
+}
+
+// The file of a contract: the PDF of it, or the Word file it was made from.
+async function getContractFile(projectId, contractId, kind = 'pdf') {
+  const contract = await knex('project_contracts')
+    .where({ id: contractId, project_id: projectId })
+    .first();
+  if (!contract) return null;
+  const key = kind === 'word' ? contract.docx_key : contract.pdf_key;
+  if (!key) return null;
+  const buffer = await contractStorage.readContractFile(key);
+  return {
+    buffer,
+    mimeType: kind === 'word'
+      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : 'application/pdf',
+    fileName: kind === 'word'
+      ? `Contract ${contract.person_name}.docx`
+      : `Contract ${contract.person_name}.pdf`
+  };
 }
 
 async function updateContract(projectId, contractId, { status, start_date: startDate, end_date: endDate }) {
@@ -250,8 +362,21 @@ async function updateContract(projectId, contractId, { status, start_date: start
 }
 
 async function deleteContract(projectId, contractId) {
-  const removed = await knex('project_contracts').where({ id: contractId, project_id: projectId }).del();
-  return removed > 0;
+  const contract = await knex('project_contracts')
+    .where({ id: contractId, project_id: projectId })
+    .first();
+  if (!contract) return false;
+  const removed = await knex('project_contracts').where({ id: contractId }).del();
+  if (!removed) return false;
+  for (const key of [contract.pdf_key, contract.docx_key]) {
+    if (!key) continue;
+    try {
+      await contractStorage.removeContractFile(key);
+    } catch (error) {
+      console.error('Could not remove a stored contract file:', error.message);
+    }
+  }
+  return true;
 }
 
 module.exports = {
@@ -262,6 +387,7 @@ module.exports = {
   saveTemplate,
   generateContracts,
   listContracts,
+  getContractFile,
   updateContract,
   deleteContract
 };
