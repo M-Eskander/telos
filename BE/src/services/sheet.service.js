@@ -1,5 +1,6 @@
 const XLSX = require('xlsx');
 const knex = require('../config/knex');
+const formula = require('./formula.service');
 
 // A project sheet is a grid of cells. Every cell keeps the value it holds and
 // the formula it came from, so nothing the spreadsheet knew is lost when the
@@ -21,11 +22,13 @@ function readSheet(sheet) {
   const reference = sheet['!ref'] || 'A1';
   const range = XLSX.utils.decode_range(reference);
   const rows = [];
-  const lastRow = Math.min(range.e.r, range.s.r + MAX_ROWS - 1);
-  const lastColumn = Math.min(range.e.c, range.s.c + MAX_COLUMNS - 1);
-  for (let r = range.s.r; r <= lastRow; r += 1) {
+  // The grid in the app always starts at A1, because the formulas in the file
+  // are written in A1 terms.
+  const lastRow = Math.min(range.e.r, MAX_ROWS - 1);
+  const lastColumn = Math.min(range.e.c, MAX_COLUMNS - 1);
+  for (let r = 0; r <= lastRow; r += 1) {
     const row = [];
-    for (let c = range.s.c; c <= lastColumn; c += 1) {
+    for (let c = 0; c <= lastColumn; c += 1) {
       const address = XLSX.utils.encode_cell({ r, c });
       const cell = sheet[address];
       if (!cell) {
@@ -33,8 +36,11 @@ function readSheet(sheet) {
         continue;
       }
       const value = cellValue(cell.v);
-      const formula = cell.f ? String(cell.f).slice(0, MAX_CELL_LENGTH) : null;
-      row.push(formula ? { v: value, f: formula } : { v: value, f: null });
+      const formulaText = cell.f ? String(cell.f).slice(0, MAX_CELL_LENGTH) : null;
+      const numberFormat = cell.z && cell.z !== 'General' ? String(cell.z).slice(0, 64) : null;
+      const stored = { v: value, f: formulaText };
+      if (numberFormat) stored.z = numberFormat;
+      row.push(stored);
     }
     rows.push(row);
   }
@@ -61,35 +67,61 @@ function readSheet(sheet) {
 function parseWorkbook(buffer, fileName) {
   let workbook;
   try {
-    workbook = XLSX.read(buffer, { type: 'buffer', cellFormula: true, cellDates: true });
+    workbook = XLSX.read(buffer, { type: 'buffer', cellFormula: true, cellDates: true, cellNF: true });
   } catch (error) {
     throw new TypeError('That file could not be read as a spreadsheet');
   }
   if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
     throw new TypeError('That spreadsheet has no sheets');
   }
-  return workbook.SheetNames.map((name, position) => ({
+  const sheets = workbook.SheetNames.map((name, position) => ({
     name: String(name).slice(0, 120),
     position,
     data: readSheet(workbook.Sheets[name]),
     source: 'upload',
     source_name: fileName ? String(fileName).slice(0, 255) : null
   }));
+  // The file carries answers Excel worked out. Work them out here as well, so
+  // the app never shows a number it cannot recalculate itself.
+  return formula.recalculate(sheets);
 }
 
-// The other direction: give the sheet back as a workbook they can open.
+// The other direction: give the sheet back as a workbook they can open. The
+// formula travels with the answer it last worked out and the number format
+// the studio put on the cell, so Excel and Google Sheets open it as it looks
+// in the app.
 function buildWorkbook(sheets) {
   const workbook = XLSX.utils.book_new();
   for (const sheet of sheets) {
-    const rows = (sheet.data || []).map((row) => (row || []).map((cell) => {
-      if (cell === null || cell === undefined) return null;
-      if (typeof cell === 'object') {
-        if (cell.f) return { t: 's', f: cell.f, v: cell.v === null ? '' : String(cell.v) };
-        return cell.v;
+    const worksheet = {};
+    const data = sheet.data || [];
+    let lastRow = -1;
+    let lastColumn = -1;
+    for (let rowIndex = 0; rowIndex < data.length; rowIndex += 1) {
+      const row = data[rowIndex] || [];
+      for (let columnIndex = 0; columnIndex < row.length; columnIndex += 1) {
+        const cell = row[columnIndex];
+        if (cell === null || cell === undefined) continue;
+        const stored = typeof cell === 'object' ? cell : { v: cell, f: null };
+        const value = stored.v === undefined ? null : stored.v;
+        const formulaText = stored.f || null;
+        if (!formulaText && (value === null || value === '')) continue;
+        const address = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+        const isError = typeof value === 'string' && formula.ERROR_CODES.has(value);
+        const type = isError ? 'e' : typeof value === 'number' ? 'n' : typeof value === 'boolean' ? 'b' : 's';
+        const target = { t: type };
+        if (formulaText) target.f = formulaText;
+        if (value !== null && value !== undefined) target.v = value;
+        else if (type === 's') target.v = '';
+        if (stored.z) target.z = String(stored.z);
+        worksheet[address] = target;
+        lastRow = Math.max(lastRow, rowIndex);
+        lastColumn = Math.max(lastColumn, columnIndex);
       }
-      return cell;
-    }));
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    }
+    worksheet['!ref'] = lastRow === -1
+      ? 'A1'
+      : XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: lastRow, c: lastColumn } });
     XLSX.utils.book_append_sheet(workbook, worksheet, (sheet.name || 'Sheet').slice(0, 31));
   }
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
@@ -210,7 +242,7 @@ async function listSheets(projectId) {
     .where({ project_id: projectId })
     .orderBy('position', 'asc')
     .orderBy('id', 'asc');
-  return rows.map((row) => ({
+  const sheets = rows.map((row) => ({
     id: row.id,
     project_id: row.project_id,
     name: row.name,
@@ -220,13 +252,20 @@ async function listSheets(projectId) {
     data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,
     updated_at: row.updated_at
   }));
+  // Read-time recalculation keeps the answers honest even for a sheet that was
+  // imported before the engine knew a formula, and costs very little.
+  return formula.recalculate(sheets);
 }
 
 async function replaceSheets(projectId, sheets) {
+  const prepared = formula.recalculate(sheets.map((sheet) => ({
+    ...sheet,
+    data: sheet.data || []
+  })));
   await knex.transaction(async (trx) => {
     await trx('project_sheets').where({ project_id: projectId }).del();
-    for (let index = 0; index < sheets.length; index += 1) {
-      const sheet = sheets[index];
+    for (let index = 0; index < prepared.length; index += 1) {
+      const sheet = prepared[index];
       await trx('project_sheets').insert({
         project_id: projectId,
         name: sheet.name,
@@ -242,16 +281,38 @@ async function replaceSheets(projectId, sheets) {
 
 async function saveSheet(projectId, sheetId, { name, data }) {
   const id = Number(sheetId);
-  const sheet = await knex('project_sheets').where({ id, project_id: projectId }).first();
-  if (!sheet) return null;
-  await knex('project_sheets').where({ id }).update({
-    name: name ? String(name).slice(0, 120) : sheet.name,
-    data: JSON.stringify(data || []),
-    source: 'manual',
-    updated_at: knex.fn.now()
+  const rows = await knex('project_sheets')
+    .where({ project_id: projectId })
+    .orderBy('position', 'asc')
+    .orderBy('id', 'asc');
+  const target = rows.find((row) => Number(row.id) === id);
+  if (!target) return null;
+  const sheets = rows.map((row) => ({
+    id: row.id,
+    name: Number(row.id) === id && name ? String(name).slice(0, 120) : row.name,
+    data: Number(row.id) === id
+      ? (data || [])
+      : (typeof row.data === 'string' ? JSON.parse(row.data) : row.data)
+  }));
+  // A change on one sheet can move numbers on every other sheet, so all of
+  // them are worked out again and stored together.
+  const recalculated = formula.recalculate(sheets);
+  await knex.transaction(async (trx) => {
+    for (const sheet of recalculated) {
+      const payload = { data: JSON.stringify(sheet.data || []) };
+      if (sheet.id === id) {
+        payload.name = sheet.name;
+        payload.source = 'manual';
+        payload.updated_at = knex.fn.now();
+      }
+      await trx('project_sheets').where({ id: sheet.id, project_id: projectId }).update(payload);
+    }
   });
-  const sheets = await listSheets(projectId);
-  return sheets.find((entry) => entry.id === id) || null;
+  const sheetsAfter = await listSheets(projectId);
+  return {
+    sheet: sheetsAfter.find((entry) => entry.id === id) || null,
+    sheets: sheetsAfter
+  };
 }
 
 async function deleteSheet(projectId, sheetId) {

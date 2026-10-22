@@ -31,9 +31,11 @@ exports.importSheet = async (req, res, next) => {
 
 exports.saveSheet = async (req, res, next) => {
   try {
-    const sheet = await studioService.saveSheet(req.params.id, req.params.sheetId, req.body || {});
-    if (!sheet) return res.status(404).json({ ok: false, message: 'Sheet not found' });
-    return res.json({ ok: true, sheet });
+    const saved = await studioService.saveSheet(req.params.id, req.params.sheetId, req.body || {});
+    if (!saved || !saved.sheet) return res.status(404).json({ ok: false, message: 'Sheet not found' });
+    // Every sheet comes back too: editing one cell can move numbers on the
+    // other sheets, and the app shows the new answers straight away.
+    return res.json({ ok: true, sheet: saved.sheet, sheets: saved.sheets });
   } catch (error) {
     return fail(res, error);
   }

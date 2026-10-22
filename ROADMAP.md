@@ -18,13 +18,13 @@ Written so we can pick it up cold tomorrow.
 | # | Item | Why it matters | Rough size |
 |---|------|----------------|------------|
 | 1 | **Task activity history** | Every task mutation is invisible today. A `task_activity` table written through on create/edit/move/delete, a per-task "History" panel, and a project-wide activity stream. This is the trust layer — without it nobody knows who moved a deadline. | Medium |
-| 2 | **A formula engine for the project sheet** | The sheet editor edits values, but the calculator (SUMIF, VLOOKUP, IF, TEXT across sheets) still recalculates in Google Sheets or Excel. Evaluating the formulas in the app would let the contracts be made from live numbers. | Large |
-| 3 | **Google Sheets sync** | Import from a Google Sheet by URL and write changes back, so the sheet stays the single source of truth. Needs the Sheets API and a per-project OAuth connection. | Medium |
-| 4 | **Project-scoped role assignment on the Team page** | The access presets exist (Owner-like, Project manager, Team member, Low-access member) and roles are created globally in `/access`, but a project manager cannot give a teammate a role *for their own project*. Needs a `PUT /api/projects/:id/members/:userId/role` endpoint plus a role dropdown per member on the Team page. | Medium |
-| 5 | **Keyboard-first workflow** | The command palette (⌘K) navigates but does not act. Add a visible row cursor, Enter to open, Space to select, and real commands ("assign to me", "mark done", "new task in *Production: Alpha*"). | Medium |
-| 6 | **Drag to set progress** | Progress is a number you type. A pencil stroke you drag along the bar would be the most tactile thing in the paper world. | Small–Medium |
-| 7 | **Phase strip / production board** | One row per root task with its rolled-up progress, dates and risk — the "where is this project" view, one screen above the task tree. | Small |
-| 8 | **Per-person load** | The "Who works on what" tab shows the load already; give it the same treatment as the revenue calculator (hours, points, share of the project). | Small |
+| 2 | **Google Sheets sync** | Import from a Google Sheet by URL and write changes back, so the sheet stays the single source of truth. Needs the Sheets API and a per-project OAuth connection. The in-app engine already calculates the sheet; this is only about living in Google's cloud. | Medium |
+| 3 | **Project-scoped role assignment on the Team page** | The access presets exist (Owner-like, Project manager, Team member, Low-access member) and roles are created globally in `/access`, but a project manager cannot give a teammate a role *for their own project*. Needs a `PUT /api/projects/:id/members/:userId/role` endpoint plus a role dropdown per member on the Team page. | Medium |
+| 4 | **Keyboard-first workflow** | The command palette (⌘K) navigates but does not act. Add a visible row cursor, Enter to open, Space to select, and real commands ("assign to me", "mark done", "new task in *Production: Alpha*"). | Medium |
+| 5 | **Drag to set progress** | Progress is a number you type. A pencil stroke you drag along the bar would be the most tactile thing in the paper world. | Small–Medium |
+| 6 | **Phase strip / production board** | One row per root task with its rolled-up progress, dates and risk — the "where is this project" view, one screen above the task tree. | Small |
+| 7 | **Per-person load** | The "Who works on what" tab shows the load already; give it the same treatment as the revenue calculator (hours, points, share of the project). | Small |
+| 8 | **Insert rows in the sheet** | Rows can be typed into the blank rows below the table, but there is no way to insert a row in the middle or copy a formula down a column. Duplicate a person row in the Team sheet and the formulas should follow. | Medium |
 | 9 | **Comments and @mentions** | The single biggest missing collaboration feature. | Large |
 | 10 | **Saved views** | "My tasks", "Late", "Unassigned", "This phase" as one-click chips instead of re-filtering by hand. | Small |
 | 11 | **A "Today" view** | The home page shows the week; make "Today" a filter on it. | Small |
@@ -85,8 +85,28 @@ Written so we can pick it up cold tomorrow.
 - **The end date is optional** on both, for terms and for contracts.
 - **A project keeps its own spreadsheet.** Import `.xlsx` / `.xls` / `.csv`
   (the revenue share calculator works as it is), edit the cells in the app,
-  export it back out. Formulas that came with the file are kept, and their
-  cells are tinted so you can see what the calculator owns.
+  export it back out. Every formula is worked out by the app itself — across
+  sheets — on every edit, so the calculator is alive inside the portal rather
+  than a picture of one. Formula cells are tinted, errors are red, the A1
+  headers and formula bar behave like a spreadsheet, and every change saves on
+  its own. Export writes the formulas, the answers and the number formats back
+  into the workbook.
+- **The engine speaks the calculator's language.** `COUNTIF`, `SUMIF`,
+  `SUMPRODUCT`, `VLOOKUP`, `IF`, `IFERROR`, `OR`, `LEFT`, `TEXT`, `SUM`, `MIN`,
+  `MAX`, `AVERAGE`, `COUNT` and the common arithmetic, text and lookup extras.
+  Array behaviour inside `SUMPRODUCT` (comparisons and `LEFT` over ranges,
+  array criteria in `SUMIF`) is covered, because that is how the bonus formula
+  is written. A circular reference shows `#CIRC!` instead of hanging. Number
+  formats (`\$#,##0`, `0.0`, `0.00%`, `0%`, `General`) are kept on import and
+  written back on export.
+- **The proof is the studio's own files.** The engine was checked cell for cell
+  against the answers Excel stored in both calculators: **397 of 397** formulas
+  on `Telos_Revenue_Share_Calculator.xlsx` and **349 of 349** on the demo, with
+  zero differences. A full import → export → re-import round trip keeps 650
+  cells, 397 formulas and 445 number formats unchanged. 24 engine unit tests
+  plus 4 end-to-end sheet tests (read, edit, cross-sheet recalculation, export)
+  cover the language, the array behaviour and a miniature of the calculator
+  chain.
 - **A project keeps its own contract layout.** The text of the contract with
   `{{Name}}`, `{{Department}}`, `{{Role}}`, `{{Hours}}`, `{{Share}}`,
   `{{Project}}`, `{{Studio}}`, `{{StartDate}}` and `{{EndDate}}` in it. The
@@ -95,6 +115,12 @@ Written so we can pick it up cold tomorrow.
   did it: the Team sheet gives the name, department, roles and weekly hours
   (roles joined with " & "), the Summary sheet gives the base revenue share,
   and people with no hours are left out (and counted).
+- **The project contract is the studio's Word file.** Upload the `.docx` once
+  per project; the app fills `{{Name}}`, `{{Department}}`, `{{Role}}`,
+  `{{Hours}}` and `{{Share}}` in the document, headers and footers, then turns
+  each one into a PDF with LibreOffice (fonts embedded, design untouched). Each
+  contract downloads as Word and as PDF. If a project has no Word file, the
+  text layout is used instead.
 - **A person can join without verifying.** "Do not ask for email verification
   yet" on the add-person form marks the account as verified and sends no mail,
   so the whole team can be added while the studio is still being tested.
@@ -116,6 +142,12 @@ Written so we can pick it up cold tomorrow.
 
 - The **"Directing" department** had gone missing from the database — restored
   from the backup.
+- **An imported sheet could land one row and one column off.** The old reader
+  started the grid at the file's used range (`B2`) instead of at `A1`, so the
+  formulas stayed in A1 terms while the cells moved. Every imported sheet now
+  anchors at `A1`. The six demo sheets in the live database were imported under
+  the old reader and are being shifted back once, after which they match the
+  demo file cell for cell.
 - **Dependency arrows never drew** in the gantt: the flat timeline list did not
   load dependencies. Fixed in `task.repo.js` (`findDatedByProject`).
 - The gantt's label column was 250px in CSS but 260px in the chart maths — a
@@ -131,7 +163,7 @@ Written so we can pick it up cold tomorrow.
 
 ```bash
 # backend
-cd /mnt/Storage/telos/backend-repo/BE && npm test          # 34 suites / 231 tests
+cd /mnt/Storage/telos/backend-repo/BE && npm test          # 37 suites / 267 tests
 
 # frontend build + deploy
 cd /home/m-eskander/telos-app/frontend/telos && npm run build
@@ -140,6 +172,20 @@ rsync -a --delete dist/ /mnt/Storage/telos/dist/
 # sweep: no overflow, no console errors, 1440 / 1024 / 390 / 320
 node /tmp/opencode/final-sweep.js
 ```
+
+The backend image needs LibreOffice Writer and a few fonts to turn contracts
+into PDFs:
+
+```dockerfile
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libreoffice-writer-nogui fonts-dejavu-core \
+  && rm -rf /var/lib/apt/lists/*
+```
+
+Without it, contracts still fill and download as Word files; the PDFs are
+skipped and the app says so. Contract files live on the `contracts` volume
+(`/data/contracts`), and the app deletes them when a contract is deleted or
+made again — nothing is left behind.
 
 Checklist before calling a change done:
 
