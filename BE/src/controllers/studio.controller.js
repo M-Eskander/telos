@@ -22,8 +22,8 @@ exports.listSheets = async (req, res, next) => {
 
 exports.importSheet = async (req, res, next) => {
   try {
-    const sheets = await studioService.importSheet(req.params.id, req.file);
-    return res.status(201).json({ ok: true, sheets });
+    const imported = await studioService.importSheet(req.params.id, req.file);
+    return res.status(201).json({ ok: true, sheets: imported.sheets, warnings: imported.warnings });
   } catch (error) {
     return fail(res, error);
   }

@@ -91,6 +91,31 @@ Written so we can pick it up cold tomorrow.
   headers and formula bar behave like a spreadsheet, and every change saves on
   its own. Export writes the formulas, the answers and the number formats back
   into the workbook.
+- **The quick grid wears the workbook's clothes.** Column widths, custom row
+  heights, bold/italic type and sizes, font colours, fills, thin borders,
+  horizontal and vertical alignment, wrapping, merged cells and the frozen
+  heading all come from the uploaded file. Text that has empty cells to its
+  right overflows the way it does in Excel (the Summary title, the note under
+  it and the section labels were being clipped). Formula cells carry an `ƒ`
+  mark and a blue paper tint; input cells stay plain. The paper colours, rules
+  and type of the portal are unchanged.
+- **Freeze choice (no stored panes in the calculator).** The workbook has no
+  pane settings, so the importer chooses the first row with four or more filled
+  cells within the top six rows as the heading, freezes that single row under
+  the column letters, and freezes columns A–B (the label/Name column). The
+  heading and Name column stay put on wide sheets; the row-number strip is
+  sticky as before.
+- **Truncation warnings are honest.** The quick grid still holds 400 rows, 60
+  columns and 2,000 characters per cell. An import now warns when real values
+  or formulas sit outside those limits (not when a file merely carries empty
+  formatted rows); the warning is shown in the Sheet tab and stored with the
+  sheet so it survives a reload. The full editor in Step 4 is the way to work
+  past those limits.
+- **SheetJS 0.18.5 was replaced with 0.20.3 from the official SheetJS CDN.**
+  The npm build has two high-severity advisories (CVE-2023-30533 prototype
+  pollution, CVE-2024-22363 ReDoS) and no npm fix; `npm audit` no longer
+  reports `xlsx`. The remaining high advisories are dev-only (Jest's
+  `update-notifier` chain); production audit is 1 moderate, 0 high.
 - **The engine speaks the calculator's language.** `COUNTIF`, `SUMIF`,
   `SUMPRODUCT`, `VLOOKUP`, `IF`, `IFERROR`, `OR`, `LEFT`, `TEXT`, `SUM`, `MIN`,
   `MAX`, `AVERAGE`, `COUNT` and the common arithmetic, text and lookup extras.
@@ -163,7 +188,7 @@ Written so we can pick it up cold tomorrow.
 
 ```bash
 # backend
-cd /mnt/Storage/telos/backend-repo/BE && npm test          # 37 suites / 267 tests
+cd /mnt/Storage/telos/backend-repo/BE && npm test          # 39 suites / 273 tests
 
 # frontend build + deploy
 cd /home/m-eskander/telos-app/frontend/telos && npm run build

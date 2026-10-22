@@ -17,8 +17,9 @@ async function importSheet(projectId, file) {
   if (!name.endsWith('.xlsx') && !name.endsWith('.xls') && !name.endsWith('.csv')) {
     throw new TypeError('Only .xlsx, .xls and .csv files can be imported');
   }
-  const sheets = sheetService.parseWorkbook(file.buffer, file.originalname);
-  return sheetService.replaceSheets(projectId, sheets);
+  const { sheets, warnings } = sheetService.parseWorkbook(file.buffer, file.originalname);
+  const saved = await sheetService.replaceSheets(projectId, sheets);
+  return { sheets: saved, warnings };
 }
 
 async function saveSheet(projectId, sheetId, payload) {

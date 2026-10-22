@@ -1,6 +1,7 @@
 const XLSX = require('xlsx');
 const knex = require('../config/knex');
 const formula = require('./formula.service');
+const workbookMeta = require('./workbookMeta.service');
 
 // A project sheet is a grid of cells. Every cell keeps the value it holds and
 // the formula it came from, so nothing the spreadsheet knew is lost when the
@@ -18,7 +19,7 @@ const cellValue = (value) => {
   return text.length > MAX_CELL_LENGTH ? text.slice(0, MAX_CELL_LENGTH) : text;
 };
 
-function readSheet(sheet) {
+function readSheet(sheet, meta = {}, sheetName = 'Sheet') {
   const reference = sheet['!ref'] || 'A1';
   const range = XLSX.utils.decode_range(reference);
   const rows = [];
@@ -26,6 +27,8 @@ function readSheet(sheet) {
   // are written in A1 terms.
   const lastRow = Math.min(range.e.r, MAX_ROWS - 1);
   const lastColumn = Math.min(range.e.c, MAX_COLUMNS - 1);
+  let longValues = 0;
+  let longFormulas = 0;
   for (let r = 0; r <= lastRow; r += 1) {
     const row = [];
     for (let c = 0; c <= lastColumn; c += 1) {
@@ -35,11 +38,15 @@ function readSheet(sheet) {
         row.push(null);
         continue;
       }
+      if (typeof cell.v === 'string' && cell.v.length > MAX_CELL_LENGTH) longValues += 1;
+      if (cell.f && String(cell.f).length > MAX_CELL_LENGTH) longFormulas += 1;
       const value = cellValue(cell.v);
       const formulaText = cell.f ? String(cell.f).slice(0, MAX_CELL_LENGTH) : null;
       const numberFormat = cell.z && cell.z !== 'General' ? String(cell.z).slice(0, 64) : null;
       const stored = { v: value, f: formulaText };
       if (numberFormat) stored.z = numberFormat;
+      const style = meta.styles && meta.styles.get(address);
+      if (style) stored.s = style;
       row.push(stored);
     }
     rows.push(row);
@@ -60,30 +67,93 @@ function readSheet(sheet) {
     }
     return Math.max(widest, last);
   }, -1);
-  return rows.map((row) => row.slice(0, width + 1));
+  const data = rows.map((row) => row.slice(0, width + 1));
+
+  // Worksheets often carry hundreds of empty formatted rows. Only warn when
+  // something real sits outside the part the app can hold.
+  let lastDataRow = -1;
+  let lastDataColumn = -1;
+  for (const address of Object.keys(sheet)) {
+    if (address[0] === '!') continue;
+    const cell = sheet[address];
+    const holds = cell && (cell.f || (cell.v !== null && cell.v !== undefined && cell.v !== ''));
+    if (!holds) continue;
+    const position = XLSX.utils.decode_cell(address);
+    if (position.r >= MAX_ROWS) lastDataRow = Math.max(lastDataRow, position.r);
+    if (position.c >= MAX_COLUMNS) lastDataColumn = Math.max(lastDataColumn, position.c);
+  }
+  const warnings = [];
+  if (lastDataRow >= 0) {
+    warnings.push(`${sheetName}: only the first ${MAX_ROWS} rows were imported; data continues to row ${lastDataRow + 1}.`);
+  }
+  if (lastDataColumn >= 0) {
+    warnings.push(`${sheetName}: only the first ${MAX_COLUMNS} columns were imported; data continues to column ${XLSX.utils.encode_col(lastDataColumn)}.`);
+  }
+  if (longValues + longFormulas > 0) {
+    warnings.push(`${sheetName}: ${longValues + longFormulas} cell(s) were shortened to ${MAX_CELL_LENGTH} characters.`);
+  }
+
+  const cols = [];
+  for (let index = 0; index <= width; index += 1) {
+    cols.push(meta.columns && Number(meta.columns[index]) > 0 ? Math.round(meta.columns[index]) : null);
+  }
+  const heights = {};
+  for (let index = 0; index < data.length; index += 1) {
+    const height = meta.rows && meta.rows[index];
+    if (Number(height) > 0) heights[index] = Math.round(height);
+  }
+  const merges = (meta.merges || [])
+    .filter((merge) => merge && merge.s && merge.e && merge.s.r < data.length && merge.s.c < width)
+    .map((merge) => ({
+      s: { r: merge.s.r, c: merge.s.c },
+      e: { r: Math.min(merge.e.r, data.length - 1), c: Math.min(merge.e.c, width - 1) }
+    }))
+    .filter((merge) => merge.e.r > merge.s.r || merge.e.c > merge.s.c);
+  const sheetMeta = {
+    cols,
+    rows: heights,
+    merges,
+    freeze: meta.freeze || { r: 0, c: 0 }
+  };
+  if (warnings.length) sheetMeta.truncated = warnings;
+  return { data, meta: sheetMeta, warnings };
 }
 
 // Turn an uploaded workbook into the sheets the app stores.
 function parseWorkbook(buffer, fileName) {
   let workbook;
   try {
-    workbook = XLSX.read(buffer, { type: 'buffer', cellFormula: true, cellDates: true, cellNF: true });
+    workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellFormula: true,
+      cellDates: true,
+      cellNF: true,
+      // Column widths and row heights are only read with this on.
+      cellStyles: true
+    });
   } catch (error) {
     throw new TypeError('That file could not be read as a spreadsheet');
   }
   if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
     throw new TypeError('That spreadsheet has no sheets');
   }
-  const sheets = workbook.SheetNames.map((name, position) => ({
-    name: String(name).slice(0, 120),
-    position,
-    data: readSheet(workbook.Sheets[name]),
-    source: 'upload',
-    source_name: fileName ? String(fileName).slice(0, 255) : null
-  }));
+  const metadata = workbookMeta.readWorkbookMeta(buffer, workbook);
+  const warnings = [];
+  const sheets = workbook.SheetNames.map((name, position) => {
+    const read = readSheet(workbook.Sheets[name], metadata.byName[name] || {}, name);
+    warnings.push(...read.warnings);
+    return {
+      name: String(name).slice(0, 120),
+      position,
+      data: read.data,
+      meta: read.meta,
+      source: 'upload',
+      source_name: fileName ? String(fileName).slice(0, 255) : null
+    };
+  });
   // The file carries answers Excel worked out. Work them out here as well, so
   // the app never shows a number it cannot recalculate itself.
-  return formula.recalculate(sheets);
+  return { sheets: formula.recalculate(sheets), warnings };
 }
 
 // The other direction: give the sheet back as a workbook they can open. The
@@ -122,6 +192,23 @@ function buildWorkbook(sheets) {
     worksheet['!ref'] = lastRow === -1
       ? 'A1'
       : XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: lastRow, c: lastColumn } });
+    const meta = sheet.meta || {};
+    if (Array.isArray(meta.cols) && meta.cols.length) {
+      worksheet['!cols'] = meta.cols.map((width) => (Number(width) > 0 ? { wpx: Number(width) } : { wch: 10 }));
+    }
+    if (meta.rows && typeof meta.rows === 'object') {
+      const heights = [];
+      for (const [index, height] of Object.entries(meta.rows)) {
+        if (Number(height) > 0) heights[Number(index)] = { hpx: Number(height) };
+      }
+      if (heights.length) worksheet['!rows'] = heights;
+    }
+    if (Array.isArray(meta.merges) && meta.merges.length) {
+      worksheet['!merges'] = meta.merges.map((merge) => ({
+        s: { r: merge.s.r, c: merge.s.c },
+        e: { r: merge.e.r, c: merge.e.c }
+      }));
+    }
     XLSX.utils.book_append_sheet(workbook, worksheet, (sheet.name || 'Sheet').slice(0, 31));
   }
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
@@ -237,6 +324,18 @@ function peopleFromSheets(sheets) {
   };
 }
 
+const storedMeta = (value) => {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      return null;
+    }
+  }
+  return value;
+};
+
 async function listSheets(projectId) {
   const rows = await knex('project_sheets')
     .where({ project_id: projectId })
@@ -250,6 +349,7 @@ async function listSheets(projectId) {
     source: row.source,
     source_name: row.source_name,
     data: typeof row.data === 'string' ? JSON.parse(row.data) : row.data,
+    meta: storedMeta(row.meta),
     updated_at: row.updated_at
   }));
   // Read-time recalculation keeps the answers honest even for a sheet that was
@@ -271,6 +371,7 @@ async function replaceSheets(projectId, sheets) {
         name: sheet.name,
         position: index,
         data: JSON.stringify(sheet.data || []),
+        meta: sheet.meta ? JSON.stringify(sheet.meta) : null,
         source: sheet.source || 'manual',
         source_name: sheet.source_name || null
       });
@@ -279,7 +380,7 @@ async function replaceSheets(projectId, sheets) {
   return listSheets(projectId);
 }
 
-async function saveSheet(projectId, sheetId, { name, data }) {
+async function saveSheet(projectId, sheetId, { name, data, meta }) {
   const id = Number(sheetId);
   const rows = await knex('project_sheets')
     .where({ project_id: projectId })
@@ -292,7 +393,8 @@ async function saveSheet(projectId, sheetId, { name, data }) {
     name: Number(row.id) === id && name ? String(name).slice(0, 120) : row.name,
     data: Number(row.id) === id
       ? (data || [])
-      : (typeof row.data === 'string' ? JSON.parse(row.data) : row.data)
+      : (typeof row.data === 'string' ? JSON.parse(row.data) : row.data),
+    meta: Number(row.id) === id && meta !== undefined ? meta : storedMeta(row.meta)
   }));
   // A change on one sheet can move numbers on every other sheet, so all of
   // them are worked out again and stored together.
@@ -303,6 +405,7 @@ async function saveSheet(projectId, sheetId, { name, data }) {
       if (sheet.id === id) {
         payload.name = sheet.name;
         payload.source = 'manual';
+        payload.meta = sheet.meta ? JSON.stringify(sheet.meta) : null;
         payload.updated_at = knex.fn.now();
       }
       await trx('project_sheets').where({ id: sheet.id, project_id: projectId }).update(payload);
