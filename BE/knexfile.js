@@ -67,6 +67,13 @@ module.exports = {
       filename: './test.sqlite3'
     },
     useNullAsDefault: true,
+    pool: {
+      // SQLite ignores foreign keys unless each connection asks for them.
+      // The tests should exercise the same cascade rules as MySQL.
+      afterCreate: (connection, done) => {
+        connection.run('PRAGMA foreign_keys = ON;', done);
+      }
+    },
     migrations: {
       directory: './src/db/migrations'
     },

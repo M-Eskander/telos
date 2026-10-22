@@ -3,7 +3,9 @@ const bcrypt = require('bcryptjs');
 const testDb = require('./testSetup');
 const knex = require('../../src/config/knex');
 const app = require('../../src/app');
+const sheetService = require('../../src/services/sheet.service');
 const { buildStyledWorkbook } = require('../fixtures/styledWorkbook');
+const { buildFormulaWorkbook } = require('../fixtures/formulaWorkbook');
 
 const setupSecret = 'test-owner-setup-secret-1234567890';
 let ownerAgent;
@@ -14,6 +16,7 @@ beforeAll(() => {
 
 beforeEach(async () => {
   bcrypt.compare.mockResolvedValue(true);
+  await testDb('project_workbooks').del();
   await testDb('project_meeting_attendees').del();
   await testDb('project_meetings').del();
   await testDb('project_contracts').del();
@@ -93,5 +96,57 @@ describe('Project spreadsheet appearance', () => {
     expect(reread.status).toBe(200);
     expect(reread.body.sheets[0].meta).toEqual(sheet.meta);
     expect(reread.body.sheets[0].data[0][0].s).toMatchObject({ b: 1, fill: '1f2937' });
+  });
+
+  test('exports the original workbook with the edited cells and imports it back', async () => {
+    const projectId = await makeProject();
+    const imported = await ownerAgent
+      .post(`/api/projects/${projectId}/sheets/import`)
+      .attach('sheet', buildFormulaWorkbook(), 'formula.xlsx');
+    expect(imported.status).toBe(201);
+    const sheet = imported.body.sheets[0];
+    expect(sheet.meta.imported).toEqual({ rows: 5, cols: 4 });
+
+    const stored = await testDb('project_workbooks').where({ project_id: projectId }).first();
+    expect(stored).toBeTruthy();
+    expect(stored.file_name).toBe('formula.xlsx');
+    expect(Buffer.from(stored.data).length).toBeGreaterThan(1000);
+
+    const edited = sheet.data.map((row) => row.map((cell) => (cell ? { ...cell } : null)));
+    edited[1][0] = { ...edited[1][0], v: 15 };
+    const saved = await ownerAgent
+      .put(`/api/projects/${projectId}/sheets/${sheet.id}`)
+      .send({ name: sheet.name, data: edited, meta: sheet.meta });
+    expect(saved.status).toBe(200);
+    expect(saved.body.sheets[0].data[1][1].v).toBe(30);
+
+    const exported = await ownerAgent
+      .get(`/api/projects/${projectId}/sheets/export`)
+      .buffer(true)
+      .parse((response, callback) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+    expect(exported.status).toBe(200);
+    expect(exported.headers['content-type']).toContain('spreadsheetml');
+    expect(exported.headers['content-disposition']).toContain('formula.xlsx');
+
+    const parsed = sheetService.parseWorkbook(exported.body, 'formula.xlsx');
+    expect(parsed.sheets[0].data[1][0].v).toBe(15);
+    expect(parsed.sheets[0].data[1][1]).toMatchObject({ v: 30, f: 'A2*2' });
+    expect(parsed.sheets[0].data[2][1]).toMatchObject({ v: 40, f: 'A3*2' });
+    expect(parsed.sheets[0].data[0][0].s).toMatchObject({ b: 1, fill: '1f2937' });
+
+    const reimported = await ownerAgent
+      .post(`/api/projects/${projectId}/sheets/import`)
+      .attach('sheet', exported.body, 'formula.xlsx');
+    expect(reimported.status).toBe(201);
+    expect(reimported.body.sheets[0].data[1][0].v).toBe(15);
+    expect(reimported.body.sheets[0].data[1][1].v).toBe(30);
+
+    const deleted = await ownerAgent.delete(`/api/projects/${projectId}`);
+    expect(deleted.status).toBe(200);
+    expect(await testDb('project_workbooks').where({ project_id: projectId })).toHaveLength(0);
   });
 });

@@ -1,5 +1,7 @@
 const knex = require('../config/knex');
 const sheetService = require('./sheet.service');
+const sheetExport = require('./sheetExport.service');
+const projectWorkbookService = require('./projectWorkbook.service');
 const projectContractService = require('./projectContract.service');
 const meetingService = require('./meeting.service');
 const scheduleService = require('./schedule.service');
@@ -17,9 +19,15 @@ async function importSheet(projectId, file) {
   if (!name.endsWith('.xlsx') && !name.endsWith('.xls') && !name.endsWith('.csv')) {
     throw new TypeError('Only .xlsx, .xls and .csv files can be imported');
   }
-  const { sheets, warnings } = sheetService.parseWorkbook(file.buffer, file.originalname);
-  const saved = await sheetService.replaceSheets(projectId, sheets);
-  return { sheets: saved, warnings };
+  const parsed = sheetService.parseWorkbook(file.buffer, file.originalname);
+  // The sheets and the original file are one import: if either write fails,
+  // neither is kept, so an export can never pair new cells with an old design.
+  await knex.transaction(async (trx) => {
+    await sheetService.replaceSheets(projectId, parsed.sheets, trx);
+    await projectWorkbookService.saveWorkbook(projectId, file, trx);
+  });
+  const sheets = await sheetService.listSheets(projectId);
+  return { sheets, warnings: parsed.warnings };
 }
 
 async function saveSheet(projectId, sheetId, payload) {
@@ -32,7 +40,23 @@ async function deleteSheet(projectId, sheetId) {
 
 async function exportSheets(projectId) {
   const sheets = await sheetService.listSheets(projectId);
-  return sheetService.buildWorkbook(sheets);
+  const original = await projectWorkbookService.getWorkbook(projectId);
+  const isXlsx = original
+    && /\.xlsx$/i.test(original.fileName || '')
+    && original.buffer.slice(0, 2).toString('latin1') === 'PK';
+  if (isXlsx && sheets.length > 0) {
+    try {
+      return sheetExport.exportWorkbook(original.buffer, sheets, original.fileName);
+    } catch (error) {
+      // The original file should always be reusable. If a legacy or damaged
+      // template cannot be patched, a plain workbook is better than no export.
+      console.warn('[sheets] could not reuse the original workbook; exporting a plain copy:', error.message);
+    }
+  }
+  return {
+    buffer: sheetService.buildWorkbook(sheets),
+    fileName: `project-${projectId}-sheet.xlsx`
+  };
 }
 
 // --- the contract layout and the contracts made from it ------------------

@@ -53,10 +53,13 @@ exports.deleteSheet = async (req, res, next) => {
 
 exports.exportSheets = async (req, res, next) => {
   try {
-    const buffer = await studioService.exportSheets(req.params.id);
+    const exported = await studioService.exportSheets(req.params.id);
+    const fileName = String(exported.fileName || `project-${req.params.id}-sheet.xlsx`)
+      .replace(/[^\w.\- ()]/g, '_')
+      .slice(0, 120) || `project-${req.params.id}-sheet.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="project-${req.params.id}-sheet.xlsx"`);
-    return res.send(buffer);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    return res.send(exported.buffer);
   } catch (error) {
     return next(error);
   }

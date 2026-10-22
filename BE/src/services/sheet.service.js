@@ -113,7 +113,11 @@ function readSheet(sheet, meta = {}, sheetName = 'Sheet') {
     cols,
     rows: heights,
     merges,
-    freeze: meta.freeze || { r: 0, c: 0 }
+    freeze: meta.freeze || { r: 0, c: 0 },
+    // How much of the workbook the quick grid took. Export uses this as the
+    // boundary of cells it is allowed to clear: rows and columns the app never
+    // imported must stay exactly as they were in the original file.
+    imported: { rows: data.length, cols: width + 1 }
   };
   if (warnings.length) sheetMeta.truncated = warnings;
   return { data, meta: sheetMeta, warnings };
@@ -357,12 +361,12 @@ async function listSheets(projectId) {
   return formula.recalculate(sheets);
 }
 
-async function replaceSheets(projectId, sheets) {
+async function replaceSheets(projectId, sheets, transaction = null) {
   const prepared = formula.recalculate(sheets.map((sheet) => ({
     ...sheet,
     data: sheet.data || []
   })));
-  await knex.transaction(async (trx) => {
+  const write = async (trx) => {
     await trx('project_sheets').where({ project_id: projectId }).del();
     for (let index = 0; index < prepared.length; index += 1) {
       const sheet = prepared[index];
@@ -376,7 +380,12 @@ async function replaceSheets(projectId, sheets) {
         source_name: sheet.source_name || null
       });
     }
-  });
+  };
+  if (transaction) {
+    await write(transaction);
+    return prepared.length;
+  }
+  await knex.transaction(write);
   return listSheets(projectId);
 }
 
