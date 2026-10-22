@@ -260,7 +260,9 @@ Written so we can pick it up cold tomorrow.
   a live editing session (the static and service paths pass). The live project
   sheets still have no stored templates; re-import the six original `.xlsx`
   files once to enable the styled grid and template-preserving export. Until
-  then the editor opens a plain fallback workbook.
+  then the editor opens a plain fallback workbook. Do not save that fallback
+  over a live sheet before re-importing the original: it would replace the
+  project's template with the plain workbook.
 - **Capacity:** the official ONLYOFFICE Docs recommendation is a dual-core
   2 GHz CPU, **4 GB RAM or more**, 2-4 GB swap and **40 GB HDD** (Docker Hub
   lists 4 GB RAM / 2 GB swap / 2 GB HDD). This host has 15.32 GiB RAM and about
