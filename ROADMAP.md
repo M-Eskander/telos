@@ -153,7 +153,8 @@ Written so we can pick it up cold tomorrow.
   `/home/m-eskander/backups/Telos_Revenue_Share_Calculator-exported-2026-10-22.xlsx`.
 - **The test database enforces SQLite foreign keys.** `knexfile.js` sets
   `PRAGMA foreign_keys = ON`, so the `project_workbooks → projects` cascade is
-  exercised instead of assumed. The suite is **40 suites / 285 tests**.
+  exercised instead of assumed. The suite is **42 suites / 298 tests**
+  (including the Step 4 ONLYOFFICE tests).
 - **Database dumps for the sheet work:**
   `/home/m-eskander/backups/telos_db-2026-10-22-pre-sheet-meta.sql` (before
   `project_sheets.meta`) and
@@ -193,6 +194,92 @@ Written so we can pick it up cold tomorrow.
   yet" on the add-person form marks the account as verified and sends no mail,
   so the whole team can be added while the studio is still being tested.
 
+### The full editor (Step 4)
+
+- **The Sheet tab can open the workbook in a real spreadsheet editor.** Managers
+  see "Open full editor" next to Import/Export. It opens
+  `/projects/:id/sheet/editor`, a full-viewport page outside the app shell, and
+  loads a self-hosted ONLYOFFICE Docs 9.4.0.1 editor. Read-only members keep the
+  quick grid and the export. If the editor cannot start, the page says why
+  (permission, missing configuration, no workbook, network, script failure) and
+  offers "Back to the quick grid"; it never leaves the Sheet tab broken.
+- **The original file stays the source of truth.** The config endpoint exports
+  the current workbook through the same template-preserving path as Export: the
+  stored original `.xlsx` with the quick grid's changed cells, or a plain
+  workbook for a legacy project with no stored template. ONLYOFFICE opens that
+  file. Its save callback returns the exact edited `.xlsx`; the backend checks
+  the ZIP signature and the 8 MB cap, parses and recalculates it, then replaces
+  the sheets and stores the edited file as the new template in one transaction.
+  A contract generated after the save reads the recalculated sheet values. The
+  next editor session gets a new document key.
+- **Saves are signed and serialized.** The browser only gets a session-guarded
+  config with an HS256 token. The document and callback URLs carry short-lived
+  signed path tokens (12 h and 7 d). The callback must also carry ONLYOFFICE's
+  own JWT in the body or `Authorization` header; forged callbacks fail with 401.
+  Status 2 (changes ready) and 6 (forced save) are saved; 4 and other statuses
+  are acknowledged without touching the sheet. Two callbacks for one project
+  are chained so the later file wins in arrival order.
+- **The save fetch is fenced.** The callback URL is rebuilt only from the
+  internal Document Server origin and is limited to `/cache/` or `/doc/`. An
+  unknown hostname is rejected. If the Document Server names itself with a
+  private IP literal, the path is fetched through the app's own public origin
+  (which Caddy routes back to the Document Server), never from the private
+  address directly. The download has a 25 s timeout and an 8 MB cap.
+- **ONLYOFFICE is same-origin and self-hosted.** `docker-compose.yml` adds
+  `onlyoffice/documentserver:9.4.0.1` with JWT enabled, the shared secret, and
+  `ALLOW_PRIVATE_IP_ADDRESS=true` so it can fetch the internal
+  `http://backend:5000` document and callback URLs. It is not published to the
+  host. Caddy proxies `/web-apps`, `/sdkjs`, `/sdkjs-plugins`, `/hosting`,
+  `/cache`, `/doc`, `/coauthoring`, `/fonts`, `/themes`, `/info`, `/plugins` and
+  `/healthcheck` to `onlyoffice:80` on both the tunnel and public Caddyfiles.
+  This avoids a second hostname and a cross-site session cookie; the tunnel
+  ingress is dashboard-managed, so a `docs.` subdomain was not available to
+  configure locally.
+- **Deployment files (not committed to GitHub):** `docker-compose.yml`,
+  `Caddyfile.tunnel`, `Caddyfile`, and the `ONLYOFFICE_JWT_SECRET` line in
+  `.env` live in `/mnt/Storage/telos`. No database migration was added, so no
+  new DB dump was required for Step 4.
+- **Verified (Step 4):** `42 suites / 298 tests` pass (including 13 new
+  ONLYOFFICE unit/integration tests: signed links, config, document serving,
+  save, recalculation, template replacement, key rotation, forged/foreign
+  callbacks, legacy fallback, missing-secret 503). `npm audit --omit=dev` is
+  clean. Live: the public `api.js` is 200; `/healthcheck` is 200; the editor
+  page is served; `/doc/abc` and `/cache/...` reach the Document Server;
+  `/coauthoring/CommandService.ashx` reaches it too. A signed document URL
+  fetched from inside the `onlyoffice` container returns 200 with a 67,627-byte
+  `PK` workbook; the config and document endpoints without a valid token are
+  401; a POST to a bad callback token is 401. ONLYOFFICE reports version 9.4.0
+  build 129 and `/healthcheck` = `true`. Idle memory: ONLYOFFICE 383 MiB,
+  backend 55 MiB.
+- **Not verified live:** the actual browser editor session, iframe, WebSocket
+  and a real ONLYOFFICE callback save, because there are no live login
+  credentials and screenshots must be checked by the user. Also unverified:
+  the callback host the Document Server actually returns under a real session
+  (the IP-literal fallback is coded and unit-tested, but not observed), a
+  contract generated after a real editor save, and the same-origin tunnel under
+  a live editing session (the static and service paths pass). The live project
+  sheets still have no stored templates; re-import the six original `.xlsx`
+  files once to enable the styled grid and template-preserving export. Until
+  then the editor opens a plain fallback workbook.
+- **Capacity:** the official ONLYOFFICE Docs recommendation is a dual-core
+  2 GHz CPU, **4 GB RAM or more**, 2-4 GB swap and **40 GB HDD** (Docker Hub
+  lists 4 GB RAM / 2 GB swap / 2 GB HDD). This host has 15.32 GiB RAM and about
+  15 GB free disk; the image is 4.86 GB. Idle use is 383 MiB, but the disk is
+  below the recommended production headroom. Monitor it before a large rollout.
+- **Licence:** the image is the unmodified upstream build. ONLYOFFICE Docs is
+  AGPLv3 plus Additional Terms (Copyright 2009-2026 Ascensio System SIA): keep
+  notices; modified versions must say so and name the original; interactive
+  UIs must identify ONLYOFFICE, say the version may be modified, and link the
+  licence; no trademark rights; non-code content is CC BY-SA 4.0. The image
+  carries `LICENSE.txt`; `THIRD_PARTY_NOTICES.md` quotes the terms, and the
+  editor footer links the licence, source and trademark policy. No ONLYOFFICE
+  code was modified. See `THIRD_PARTY_NOTICES.md` for the full text and contact.
+- **Decision log:** same-origin Caddy paths instead of a subdomain (tunnel
+  ingress is dashboard-managed); pin 9.4.0.1; internal Document Server URLs plus
+  `ALLOW_PRIVATE_IP_ADDRESS`; 12 h document tokens and 7 d callback tokens; the
+  editor page is outside the Shell for full viewport; the IP-literal save fetch
+  goes through the public origin rather than the private address.
+
 ### The studio day to day
 
 - **A home page** (`/`) — everything assigned to you across every project, the
@@ -231,7 +318,7 @@ Written so we can pick it up cold tomorrow.
 
 ```bash
 # backend
-cd /mnt/Storage/telos/backend-repo/BE && npm test          # 39 suites / 273 tests
+cd /mnt/Storage/telos/backend-repo/BE && npm test          # 42 suites / 298 tests
 
 # frontend build + deploy
 cd /home/m-eskander/telos-app/frontend/telos && npm run build
