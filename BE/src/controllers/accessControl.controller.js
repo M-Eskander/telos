@@ -7,6 +7,8 @@ function parsePersonFields(body) {
   else if (typeof fields.age === 'string') fields.age = Number(fields.age);
   if (fields.is_active === 'true') fields.is_active = true;
   else if (fields.is_active === 'false') fields.is_active = false;
+  if (fields.skip_verification === 'true') fields.skip_verification = true;
+  else if (fields.skip_verification === 'false') fields.skip_verification = false;
   if (typeof fields.roles === 'string') {
     try {
       fields.roles = JSON.parse(fields.roles);

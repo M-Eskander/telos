@@ -158,6 +158,9 @@ describe('Access-control administration API', () => {
     expect(invalidAge.status).toBe(400);
     const invalidActive = await createPerson(ownerAgent, { is_active: 'no' });
     expect(invalidActive.status).toBe(400);
+    const invalidSkip = await createPerson(ownerAgent, { skip_verification: 'no' });
+    expect(invalidSkip.status).toBe(400);
+    expect(invalidSkip.body.message).toContain('skip_verification must be a boolean');
     const malformedRoleField = await createPerson(ownerAgent, { roles: 'not-json' });
     expect(malformedRoleField.status).toBe(400);
     const duplicateEmail = await createPerson(ownerAgent, { email: 'owner@example.com' });

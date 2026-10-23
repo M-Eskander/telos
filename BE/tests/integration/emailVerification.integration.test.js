@@ -189,6 +189,27 @@ describe('Email verification', () => {
     expect(mailerSpy).toHaveBeenCalledTimes(2);
   });
 
+  test('accepts the multipart skip_verification flag and lets the person sign in', async () => {
+    const created = await createPerson({
+      email: 'skip-verification@example.com',
+      skip_verification: true
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.person.emailVerified).toBe(true);
+    expect(created.body.person.verificationEmail).toMatchObject({
+      sent: false,
+      skipped: true,
+      deferred: true
+    });
+    expect(mailerSpy).not.toHaveBeenCalled();
+
+    const login = await request(app).post('/api/auth/login').send({
+      email: 'skip-verification@example.com',
+      password: 'password'
+    });
+    expect(login.status).toBe(200);
+  });
+
   test('owner can resend and manually verify people', async () => {
     const created = await createPerson({ email: 'owner-override@example.com' });
     const personId = created.body.person.id;
