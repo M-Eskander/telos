@@ -1,5 +1,6 @@
 const request = require('supertest');
 const bcrypt = require('bcryptjs');
+const XLSX = require('xlsx');
 const testDb = require('./testSetup');
 const knex = require('../../src/config/knex');
 const app = require('../../src/app');
@@ -63,7 +64,34 @@ async function makeProject() {
   return created.body.project.id;
 }
 
+function workbookWithTabs(names) {
+  const workbook = XLSX.utils.book_new();
+  for (const name of names) {
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([[name]]), name);
+  }
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
 describe('Project spreadsheet appearance', () => {
+  test('import replaces the project tabs with every tab in the workbook', async () => {
+    const projectId = await makeProject();
+    const first = await ownerAgent
+      .post(`/api/projects/${projectId}/sheets/import`)
+      .attach('sheet', workbookWithTabs(['Alpha', 'Beta']), 'alpha-beta.xlsx');
+    expect(first.status).toBe(201);
+    expect(first.body.sheets.map((sheet) => sheet.name)).toEqual(['Alpha', 'Beta']);
+
+    const second = await ownerAgent
+      .post(`/api/projects/${projectId}/sheets/import`)
+      .attach('sheet', workbookWithTabs(['Gamma', 'Delta']), 'gamma-delta.xlsx');
+    expect(second.status).toBe(201);
+    expect(second.body.sheets.map((sheet) => sheet.name)).toEqual(['Gamma', 'Delta']);
+
+    const reread = await ownerAgent.get(`/api/projects/${projectId}/sheets`);
+    expect(reread.status).toBe(200);
+    expect(reread.body.sheets.map((sheet) => sheet.name)).toEqual(['Gamma', 'Delta']);
+  });
+
   test('keeps imported widths, heights, styles, merges and freezes through a save', async () => {
     const projectId = await makeProject();
     const imported = await ownerAgent

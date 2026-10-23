@@ -340,11 +340,17 @@ const storedMeta = (value) => {
   return value;
 };
 
+// Keep sorting in Node, not in MySQL. `SELECT *` returns the full JSON cell
+// grid, and MySQL's default 256 KB sort buffer is smaller than a realistic
+// imported workbook. ORDER BY then fails with ER_OUT_OF_SORTMEMORY (500),
+// even though the sheet data itself is fine.
+const sortSheetRows = (rows) => rows.sort((left, right) => (
+  (Number(left.position) - Number(right.position)) || (Number(left.id) - Number(right.id))
+));
+
 async function listSheets(projectId) {
-  const rows = await knex('project_sheets')
-    .where({ project_id: projectId })
-    .orderBy('position', 'asc')
-    .orderBy('id', 'asc');
+  const rows = await knex('project_sheets').where({ project_id: projectId });
+  sortSheetRows(rows);
   const sheets = rows.map((row) => ({
     id: row.id,
     project_id: row.project_id,
@@ -391,10 +397,8 @@ async function replaceSheets(projectId, sheets, transaction = null) {
 
 async function saveSheet(projectId, sheetId, { name, data, meta }) {
   const id = Number(sheetId);
-  const rows = await knex('project_sheets')
-    .where({ project_id: projectId })
-    .orderBy('position', 'asc')
-    .orderBy('id', 'asc');
+  const rows = await knex('project_sheets').where({ project_id: projectId });
+  sortSheetRows(rows);
   const target = rows.find((row) => Number(row.id) === id);
   if (!target) return null;
   const sheets = rows.map((row) => ({
