@@ -1,0 +1,41 @@
+{
+	auto_https off
+}
+
+:80 {
+	encode gzip
+
+	handle /api* {
+		reverse_proxy backend:5000 {
+			# Cloudflare terminates HTTPS; tell the backend so secure cookies work,
+			# and pass the real visitor IP so the rate limiter is per person.
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		}
+	}
+
+	# The app's three brand webfonts live under /fonts. ONLYOFFICE also owns
+	# /fonts for its own editor fonts, so serve just these exact files from
+	# dist before the Document Server matcher.
+	@telos_fonts path /fonts/comfortaa-latin.woff2 /fonts/amaticsc-400.woff2 /fonts/amaticsc-700.woff2
+	handle @telos_fonts {
+		root * /srv/dist
+		file_server
+	}
+
+	# ONLYOFFICE Docs is served same-origin. Keeping /web-apps, /sdkjs and
+	# /coauthoring on this host avoids a second cookie domain and lets the
+	# editor's WebSocket use the page's own scheme and host.
+	@onlyoffice path /web-apps/* /sdkjs/* /sdkjs-plugins/* /hosting/* /cache/* /doc/* /coauthoring/* /fonts/* /themes/* /info/* /plugins/* /healthcheck
+	handle @onlyoffice {
+		reverse_proxy onlyoffice:80 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	handle {
+		root * /srv/dist
+		try_files {path} /index.html
+		file_server
+	}
+}
