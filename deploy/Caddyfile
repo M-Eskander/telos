@@ -14,12 +14,30 @@
 		file_server
 	}
 
+	# The editor's API loads the iframe from a versioned prefix such as
+	# /9.4.0-574631.../web-apps/apps/spreadsheeteditor/... . If that prefix
+	# falls through to the SPA, the iframe renders Telos instead of ONLYOFFICE
+	# and onAppReady never fires. Send every versioned path to the Document
+	# Server; its nginx strips the prefix.
+	@onlyoffice_versioned path_regexp ^/[0-9]+\.[0-9]+\.[0-9]+[.-][A-Za-z0-9]+/
+	handle @onlyoffice_versioned {
+		reverse_proxy onlyoffice:80 {
+			flush_interval -1
+			stream_timeout 0s
+		}
+	}
+
 	# ONLYOFFICE Docs is served same-origin. Keeping /web-apps, /sdkjs and
 	# /coauthoring on this host avoids a second cookie domain and lets the
 	# editor's WebSocket use the page's own scheme and host.
 	@onlyoffice path /web-apps/* /sdkjs/* /sdkjs-plugins/* /hosting/* /cache/* /doc/* /coauthoring/* /fonts/* /themes/* /info/* /plugins/* /healthcheck
 	handle @onlyoffice {
 		reverse_proxy onlyoffice:80 {
+			# The editor keeps a long-lived socket.io WebSocket open under /doc.
+			# Caddy upgrades it automatically; these keep the stream unbuffered
+			# and remove any reverse-proxy stream timeout.
+			flush_interval -1
+			stream_timeout 0s
 		}
 	}
 
