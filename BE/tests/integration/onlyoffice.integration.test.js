@@ -119,7 +119,7 @@ describe('ONLYOFFICE full editor', () => {
     expect(badLink.status).toBe(401);
 
     const config = await editorConfig(projectId);
-    expect(config.documentType).toBe('spreadsheet');
+    expect(config.documentType).toBe('cell');
     expect(config.document).toMatchObject({ fileType: 'xlsx', title: 'formula.xlsx' });
     expect(config.document.url).toMatch(new RegExp(`^http://backend:5000/api/onlyoffice/document/`));
     expect(config.editorConfig.callbackUrl).toMatch(new RegExp(`^http://backend:5000/api/onlyoffice/callback/`));

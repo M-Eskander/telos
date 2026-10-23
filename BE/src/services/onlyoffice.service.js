@@ -242,7 +242,11 @@ async function buildEditorConfig(projectId, user) {
         comment: false
       }
     },
-    documentType: 'spreadsheet',
+    // ONLYOFFICE's API accepts word/cell/slide/pdf/diagram here. 'cell' is
+    // its name for the spreadsheet editor; 'spreadsheet' makes the editor
+    // iframe load but never initialise, so onAppReady/onDocumentReady never
+    // fire.
+    documentType: 'cell',
     editorConfig: {
       callbackUrl: `${backendBaseUrl()}/api/onlyoffice/callback/${encodeURIComponent(callbackToken)}`,
       lang: 'en',
