@@ -9,9 +9,19 @@ const {
   PRESET_ATTRIBUTE_NAMES
 } = require('../config/accessPresets');
 
+function verificationFields(user) {
+  const verified = !!user.email_verified_at;
+  const deferred = !verified && !!user.email_verification_deferred_at;
+  return {
+    emailVerified: verified,
+    emailVerificationDeferred: deferred,
+    emailVerificationStatus: verified ? 'verified' : deferred ? 'deferred' : 'pending'
+  };
+}
+
 async function listPeople() {
   const people = await knex('users')
-    .select('id', 'name', 'email', 'phone_number', 'location', 'age', 'is_active', 'created_at', 'email_verified_at')
+    .select('id', 'name', 'email', 'phone_number', 'location', 'age', 'is_active', 'created_at', 'email_verified_at', 'email_verification_deferred_at')
     .orderBy('name');
   const assignments = await knex('user_roles')
     .join('roles', 'user_roles.role_id', 'roles.id')
@@ -53,10 +63,10 @@ async function listPeople() {
     contractsByUser.get(contract.user_id).push(contractService.publicContract(contract));
   }
   return people.map(person => {
-    const { email_verified_at, ...fields } = person;
+    const { email_verified_at, email_verification_deferred_at, ...fields } = person;
     return {
       ...fields,
-      emailVerified: !!email_verified_at,
+      ...verificationFields(person),
       roles: rolesByUser.get(person.id) || [],
       roleAssignments: assignmentsByUser.get(person.id) || [],
       contracts: contractsByUser.get(person.id) || [],
@@ -141,10 +151,10 @@ async function normalizeRoleAssignments(trx, input) {
 
 async function getPersonAccessDetails(userId) {
   const person = await knex('users').where({ id: userId })
-    .select('id', 'name', 'email', 'phone_number', 'location', 'age', 'is_active', 'created_at', 'email_verified_at')
+    .select('id', 'name', 'email', 'phone_number', 'location', 'age', 'is_active', 'created_at', 'email_verified_at', 'email_verification_deferred_at')
     .first();
   if (!person) return null;
-  const { email_verified_at, ...personFields } = person;
+  const { email_verified_at, email_verification_deferred_at, ...personFields } = person;
   const [roles, attributes] = await Promise.all([
     knex('user_roles')
       .join('roles', 'user_roles.role_id', 'roles.id')
@@ -164,7 +174,7 @@ async function getPersonAccessDetails(userId) {
   const contracts = await contractService.listContractsForUser(userId);
   return {
     ...personFields,
-    emailVerified: !!email_verified_at,
+    ...verificationFields(person),
     roles,
     attributes,
     contracts,
@@ -193,8 +203,11 @@ async function createPerson(data, contractFile) {
         age: data.age === undefined ? null : data.age,
         is_active: data.is_active === undefined ? true : data.is_active,
         // Someone who joins while the studio is still being tested does not
-        // have to open a verification mail before they can work.
-        email_verified_at: skipVerification ? Date.now() : null,
+        // have to open a verification mail before they can work. Their address
+        // stays unverified, with a visible "on hold" state that can be turned
+        // into a normal verification request later.
+        email_verified_at: null,
+        email_verification_deferred_at: skipVerification ? Date.now() : null,
         created_at: new Date()
       });
       const user = await trx('users').where({ id }).first();
@@ -238,9 +251,10 @@ function safePerson(user) {
   delete user.password;
   delete user.email_verification_token_hash;
   delete user.email_verification_expires_at;
-  if (user.email_verified_at !== undefined) {
-    user.emailVerified = !!user.email_verified_at;
+  if (user.email_verified_at !== undefined || user.email_verification_deferred_at !== undefined) {
+    Object.assign(user, verificationFields(user));
     delete user.email_verified_at;
+    delete user.email_verification_deferred_at;
   }
   return user;
 }

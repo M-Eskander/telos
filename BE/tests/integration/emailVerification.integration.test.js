@@ -189,13 +189,15 @@ describe('Email verification', () => {
     expect(mailerSpy).toHaveBeenCalledTimes(2);
   });
 
-  test('accepts the multipart skip_verification flag and lets the person sign in', async () => {
+  test('puts skipped verification on hold instead of marking the address verified', async () => {
     const created = await createPerson({
       email: 'skip-verification@example.com',
       skip_verification: true
     });
     expect(created.status).toBe(201);
-    expect(created.body.person.emailVerified).toBe(true);
+    expect(created.body.person.emailVerified).toBe(false);
+    expect(created.body.person.emailVerificationDeferred).toBe(true);
+    expect(created.body.person.emailVerificationStatus).toBe('deferred');
     expect(created.body.person.verificationEmail).toMatchObject({
       sent: false,
       skipped: true,
@@ -203,11 +205,110 @@ describe('Email verification', () => {
     });
     expect(mailerSpy).not.toHaveBeenCalled();
 
-    const login = await request(app).post('/api/auth/login').send({
+    const row = await testDb('users').where({ email: 'skip-verification@example.com' }).first();
+    expect(row.email_verified_at).toBeFalsy();
+    expect(Number(row.email_verification_deferred_at)).toBeGreaterThan(0);
+    expect(row.email_verification_token_hash).toBeFalsy();
+
+    const publicResend = await request(app).post('/api/auth/resend-verification').send({
+      email: 'skip-verification@example.com'
+    });
+    expect(publicResend.status).toBe(200);
+    expect(mailerSpy).not.toHaveBeenCalled();
+
+    const listed = await ownerAgent.get('/api/admin/people');
+    const listedPerson = listed.body.people.find(person => person.id === created.body.person.id);
+    expect(listedPerson.emailVerified).toBe(false);
+    expect(listedPerson.emailVerificationDeferred).toBe(true);
+    expect(listedPerson.emailVerificationStatus).toBe('deferred');
+
+    const details = await ownerAgent.get(`/api/admin/people/${created.body.person.id}`);
+    expect(details.body.person.emailVerificationStatus).toBe('deferred');
+
+    const personAgent = request.agent(app);
+    const login = await personAgent.post('/api/auth/login').send({
       email: 'skip-verification@example.com',
       password: 'password'
     });
     expect(login.status).toBe(200);
+    expect(login.body.user.emailVerified).toBe(false);
+    expect(login.body.user.emailVerificationDeferred).toBe(true);
+    expect(login.body.user.emailVerificationStatus).toBe('deferred');
+
+    const me = await personAgent.get('/api/auth/me');
+    expect(me.status).toBe(200);
+    expect(me.body.user.emailVerificationDeferred).toBe(true);
+  });
+
+  test('requesting verification later restores the sign-in gate', async () => {
+    const created = await createPerson({
+      email: 'deferred-later@example.com',
+      skip_verification: true
+    });
+    const personId = created.body.person.id;
+    expect(created.body.person.emailVerificationDeferred).toBe(true);
+    expect(mailerSpy).not.toHaveBeenCalled();
+
+    const personAgent = request.agent(app);
+    expect((await personAgent.post('/api/auth/login').send({
+      email: 'deferred-later@example.com',
+      password: 'password'
+    })).status).toBe(200);
+
+    const sent = await ownerAgent.post(`/api/admin/people/${personId}/send-verification`);
+    expect(sent.status).toBe(200);
+    expect(mailerSpy).toHaveBeenCalledTimes(1);
+
+    const row = await testDb('users').where({ id: personId }).first();
+    expect(row.email_verified_at).toBeFalsy();
+    expect(row.email_verification_deferred_at).toBeFalsy();
+    expect(row.email_verification_token_hash).toMatch(/^[a-f0-9]{64}$/);
+
+    const detailsAfter = await ownerAgent.get(`/api/admin/people/${personId}`);
+    expect(detailsAfter.body.person.emailVerificationDeferred).toBe(false);
+    expect(detailsAfter.body.person.emailVerificationStatus).toBe('pending');
+
+    const blocked = await request(app).post('/api/auth/login').send({
+      email: 'deferred-later@example.com',
+      password: 'password'
+    });
+    expect(blocked.status).toBe(403);
+    expect(blocked.body.code).toBe('EMAIL_NOT_VERIFIED');
+
+    // Clearing the hold also invalidates a session that was opened while the
+    // person was allowed to sign in.
+    expect((await personAgent.get('/api/auth/me')).status).toBe(401);
+
+    const token = tokenFromVerifyUrl(mailerSpy.mock.calls[0][0].verifyUrl);
+    expect((await request(app).post('/api/auth/verify-email').send({ token })).status).toBe(200);
+    const login = await request(app).post('/api/auth/login').send({
+      email: 'deferred-later@example.com',
+      password: 'password'
+    });
+    expect(login.status).toBe(200);
+    expect(login.body.user.emailVerified).toBe(true);
+    expect(login.body.user.emailVerificationStatus).toBe('verified');
+  });
+
+  test('keeps verification on hold when the later email cannot be sent', async () => {
+    const created = await createPerson({
+      email: 'deferred-no-mail@example.com',
+      skip_verification: true
+    });
+    const personId = created.body.person.id;
+    mailerSpy.mockResolvedValueOnce({ sent: false, skipped: true });
+
+    const sent = await ownerAgent.post(`/api/admin/people/${personId}/send-verification`);
+    expect(sent.status).toBe(503);
+
+    const row = await testDb('users').where({ id: personId }).first();
+    expect(Number(row.email_verification_deferred_at)).toBeGreaterThan(0);
+    const login = await request(app).post('/api/auth/login').send({
+      email: 'deferred-no-mail@example.com',
+      password: 'password'
+    });
+    expect(login.status).toBe(200);
+    expect(login.body.user.emailVerificationStatus).toBe('deferred');
   });
 
   test('owner can resend and manually verify people', async () => {

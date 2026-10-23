@@ -24,6 +24,16 @@ function serializeRoleAssignments(roles) {
     });
 }
 
+function serializeVerification(user) {
+  const verified = !!user.email_verified_at;
+  const deferred = !verified && !!user.email_verification_deferred_at;
+  return {
+    emailVerified: verified,
+    emailVerificationDeferred: deferred,
+    emailVerificationStatus: verified ? 'verified' : deferred ? 'deferred' : 'pending'
+  };
+}
+
 // UI hint only: the server still enforces every permission. Returning the
 // resolved list lets the frontend hide actions the person cannot use.
 async function globalPermissionsFor(user) {
@@ -58,7 +68,7 @@ exports.login = (req, res, next) => {
           id: user.id,
           name: user.name,
           email: user.email,
-          emailVerified: !!user.email_verified_at,
+          ...serializeVerification(user),
           roles: serializeRoleAssignments(user.roles).map(role => role.name),
           roleAssignments: serializeRoleAssignments(user.roles),
           isOwner: user.isOwner,
@@ -88,7 +98,7 @@ exports.me = async (req, res) => {
       id: req.user.id,
       name: req.user.name,
       email: req.user.email,
-      emailVerified: !!req.user.email_verified_at,
+      ...serializeVerification(req.user),
       roles: serializeRoleAssignments(req.user.roles).map(role => role.name),
       roleAssignments: serializeRoleAssignments(req.user.roles),
       isOwner: req.user.isOwner,
@@ -107,7 +117,9 @@ exports.verifyEmail = async (req, res, next) => {
         id: user.id,
         name: user.name,
         email: user.email,
-        emailVerified: true
+        emailVerified: true,
+        emailVerificationDeferred: false,
+        emailVerificationStatus: 'verified'
       }
     });
   } catch (error) {

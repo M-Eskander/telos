@@ -7,6 +7,10 @@ const pdpService = require('../services/pdp.service');
 const projectRepo = require('../repositories/project.repo');
 const taskRepo = require('../repositories/task.repo');
 
+function maySignInBeforeVerification(user) {
+  return !!user.email_verified_at || !!user.email_verification_deferred_at;
+}
+
 passport.use(
   new LocalStrategy({ usernameField: 'email', passwordField: 'password' },
     async (email, password, done) => {
@@ -22,7 +26,7 @@ passport.use(
         }
 
         const isOwner = await authService.isOwner(user.id);
-        if (!user.email_verified_at) {
+        if (!maySignInBeforeVerification(user)) {
           return done(null, false, {
             code: 'EMAIL_NOT_VERIFIED',
             message: 'Your email address has not been verified yet. Open the link we emailed you, then sign in again.',
@@ -52,7 +56,7 @@ passport.deserializeUser(async (id, done) => {
 
     user.roles = await authService.getUserRoleAssignments(id);
     user.isOwner = await authService.isOwner(id);
-    if (!user.email_verified_at) return done(null, false);
+    if (!maySignInBeforeVerification(user)) return done(null, false);
     delete user.password;
     done(null, user);
   } catch (err) {

@@ -45,6 +45,13 @@ async function sendVerificationEmail(user) {
     name: user.name,
     verifyUrl
   });
+  if (result.sent) {
+    // Once the mail is actually on its way, verification is no longer on
+    // hold: from now on the person must confirm the address before signing in.
+    await knex('users').where({ id: user.id }).update({
+      email_verification_deferred_at: null
+    });
+  }
   return { ...result, verifyUrl };
 }
 
@@ -71,6 +78,7 @@ async function verifyToken(token) {
 
   await knex('users').where({ id: user.id }).update({
     email_verified_at: Date.now(),
+    email_verification_deferred_at: null,
     email_verification_token_hash: null,
     email_verification_expires_at: null
   });
@@ -80,6 +88,7 @@ async function verifyToken(token) {
 async function markVerified(userId) {
   const updated = await knex('users').where({ id: userId }).update({
     email_verified_at: Date.now(),
+    email_verification_deferred_at: null,
     email_verification_token_hash: null,
     email_verification_expires_at: null
   });
@@ -94,7 +103,9 @@ async function requestVerificationForEmail(email) {
     return { requested: false };
   }
   const user = await knex('users').where({ email: email.trim() }).first();
-  if (!user || user.email_verified_at) {
+  if (!user || user.email_verified_at || user.email_verification_deferred_at) {
+    // A person whose verification is on hold can already sign in. Only the
+    // studio's explicit request should move them out of that state.
     return { requested: false };
   }
   await sendVerificationEmail(user);

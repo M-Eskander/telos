@@ -187,7 +187,9 @@ exports.verifyPersonEmail = async (req, res, next) => {
         id: person.id,
         name: person.name,
         email: person.email,
-        emailVerified: true
+        emailVerified: true,
+        emailVerificationDeferred: false,
+        emailVerificationStatus: 'verified'
       }
     });
   } catch (error) {
