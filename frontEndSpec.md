@@ -398,7 +398,9 @@ require `update:project`.
 | `POST` | `/api/projects/:projectId/departments` | Add a department; `{ ok, department: { id, projectId, name } }`. |
 | `DELETE` | `/api/projects/:projectId/departments/:departmentId` | Remove it; `{ ok: true }`. |
 | `GET` | `/api/projects/:projectId/members` | `{ ok, members }`, active members only. |
-| `PUT` | `/api/projects/:projectId/members/:userId` | Add or move a member to a department. |
+| `POST` | `/api/projects/:projectId/members` | Add a member with their required project contract PDF (`multipart/form-data`: `userId`, optional `departmentId`, required `contract`). |
+| `POST` | `/api/projects/:projectId/members/:userId/contract` | Attach or replace the project contract PDF for an existing member (`multipart/form-data`: required `contract`). |
+| `PUT` | `/api/projects/:projectId/members/:userId` | Move an existing member to a department. |
 | `DELETE` | `/api/projects/:projectId/members/:userId` | Remove membership and their task assignments in that project. |
 
 Department create:
@@ -422,19 +424,39 @@ Department creation returns
 `{ "ok": true, "department": { "id": 3, "projectId": 42, "name": "Engineering" } }`.
 Duplicate name in the same project returns `409`.
 
-Assign a person:
+Add a person to a project with their required contract PDF:
+
+```text
+POST /api/projects/42/members
+Content-Type: multipart/form-data
+
+userId=17
+departmentId=3        (optional)
+contract=@project-contract.pdf
+```
+
+The `contract` part is required and must be a valid PDF up to 10 MB. It is
+stored with `source = "uploaded"` and linked to both this project and this
+person, so it appears in the project Contracts area. Missing or invalid PDFs
+are rejected with `400` and no membership is created. A person can be added
+once; adding them again returns `400`.
+
+An existing member can attach a contract later with
+`POST /api/projects/42/members/17/contract` and the same `contract` part.
+Uploading again replaces the previous uploaded contract, keeping a single
+contract row for that member.
+
+Move an existing member:
 
 ```json
 { "departmentId": 3 }
 ```
 
 Set `departmentId` to `null` (or omit it) for membership with no department.
-This is an upsert: assigning a current member again moves them or clears their
-department. Only active people can be members, and a supplied department must
-belong to this project. Success is `{ "ok": true, "member": ... }`. The returned
-member is the matching row from the project member list and has `userId`,
-`name`, `email`, `phoneNumber`, `projectId`, `departmentId`, and
-`departmentName`.
+Only active people can be members, and a supplied department must belong to
+this project. Success is `{ "ok": true, "member": ... }`. The returned member is
+the matching row from the project member list and has `userId`, `name`,
+`email`, `phoneNumber`, `projectId`, `departmentId`, and `departmentName`.
 
 The exact list response is:
 
@@ -449,14 +471,18 @@ The exact list response is:
       "phoneNumber": "555-0101",
       "projectId": 42,
       "departmentId": 3,
-      "departmentName": "Engineering"
+      "departmentName": "Engineering",
+      "contractId": 88,
+      "hasProjectContract": true
     }
   ]
 }
 ```
 
 When no department is assigned, `departmentId` and `departmentName` are
-typically `null`. An empty membership list is `{ "ok": true, "members": [] }`.
+typically `null`. `contractId` and `hasProjectContract` describe the member's
+project contract; `hasProjectContract` is `false` when no project contract is
+on file. An empty membership list is `{ "ok": true, "members": [] }`.
 
 Deleting a department sets its members' `departmentId` to `null`; it does not
 remove their project membership. Removing a member also removes their

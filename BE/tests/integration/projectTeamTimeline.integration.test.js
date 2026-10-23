@@ -50,6 +50,7 @@ beforeEach(async () => {
   bcrypt.compare.mockResolvedValue(true);
   await testDb('owner_account').del();
   await testDb('contracts').del();
+  await testDb('project_contracts').del();
   await testDb('project_memberships').del();
   await testDb('project_departments').del();
   await testDb('user_attributes').del();
@@ -257,6 +258,155 @@ describe('Project departments and people assignments', () => {
     expect((await agent.get(`/api/projects/${project.id}/departments`)).status).toBe(403);
     expect((await agent.put(`/api/projects/${project.id}/members/${person.body.person.id}`)
       .send({ departmentId: null })).status).toBe(403);
+  });
+});
+
+describe('Project member contracts', () => {
+  test('adds a member only with a project contract PDF and lists the PDF on the contract', async () => {
+    const project = await createProject('Contract Team');
+    const department = await ownerAgent.post(`/api/projects/${project.id}/departments`)
+      .send({ name: 'Art' });
+    const person = await createPerson({
+      email: 'contract-member@example.com',
+      name: 'Contract Member'
+    });
+    const personId = person.body.person.id;
+
+    const missing = await ownerAgent.post(`/api/projects/${project.id}/members`)
+      .field('userId', personId);
+    expect(missing.status).toBe(400);
+    expect(missing.body.message).toMatch(/project contract PDF/i);
+    expect(await testDb('project_memberships').where({
+      project_id: project.id,
+      user_id: personId
+    }).first()).toBeUndefined();
+
+    const invalid = await ownerAgent.post(`/api/projects/${project.id}/members`)
+      .field('userId', personId)
+      .field('departmentId', department.body.department.id)
+      .attach('contract', Buffer.from('not a PDF'), {
+        filename: 'contract.pdf',
+        contentType: 'application/pdf'
+      });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.message).toMatch(/valid PDF/i);
+
+    const added = await ownerAgent.post(`/api/projects/${project.id}/members`)
+      .field('userId', personId)
+      .field('departmentId', department.body.department.id)
+      .attach('contract', Buffer.from('%PDF-1.7\nProject contract\n%%EOF'), {
+        filename: 'contract.pdf',
+        contentType: 'application/pdf'
+      });
+    expect(added.status).toBe(201);
+    expect(added.body.member).toMatchObject({
+      userId: personId,
+      departmentName: 'Art',
+      hasProjectContract: true
+    });
+
+    const stored = await testDb('project_contracts')
+      .where({ project_id: project.id, user_id: personId })
+      .first();
+    expect(stored).toBeDefined();
+    expect(stored.source).toBe('uploaded');
+    expect(stored.status).toBe('uploaded');
+    expect(stored.pdf_key).toBeTruthy();
+    expect(stored.docx_key).toBeFalsy();
+    const storedData = typeof stored.document_data === 'string'
+      ? JSON.parse(stored.document_data)
+      : stored.document_data;
+    expect(storedData).toMatchObject({
+      Name: 'Contract Member',
+      Department: 'Art',
+      Project: 'Contract Team'
+    });
+
+    const contracts = await ownerAgent.get(`/api/projects/${project.id}/contracts`);
+    expect(contracts.status).toBe(200);
+    const listed = contracts.body.contracts.find(contract => contract.id === stored.id);
+    expect(listed).toMatchObject({
+      person_name: 'Contract Member',
+      user_id: personId,
+      source: 'uploaded',
+      has_pdf: true,
+      has_word: false
+    });
+    expect(listed.data.Name).toBe('Contract Member');
+
+    const members = await ownerAgent.get(`/api/projects/${project.id}/members`);
+    expect(members.body.members).toEqual([
+      expect.objectContaining({
+        userId: personId,
+        contractId: stored.id,
+        hasProjectContract: true
+      })
+    ]);
+
+    const duplicate = await ownerAgent.post(`/api/projects/${project.id}/members`)
+      .field('userId', personId)
+      .attach('contract', Buffer.from('%PDF-1.7\nAnother contract\n%%EOF'), {
+        filename: 'contract.pdf',
+        contentType: 'application/pdf'
+      });
+    expect(duplicate.status).toBe(400);
+    expect(duplicate.body.message).toMatch(/already a member/i);
+    expect(await testDb('project_contracts').where({
+      project_id: project.id,
+      user_id: personId
+    })).toHaveLength(1);
+  });
+
+  test('attaches or replaces a contract for a member who is already on the team', async () => {
+    const project = await createProject('Existing Team Contract');
+    const person = await createPerson({
+      email: 'existing-team@example.com',
+      name: 'Existing Team Member'
+    });
+    const personId = person.body.person.id;
+    await ownerAgent.put(`/api/projects/${project.id}/members/${personId}`)
+      .send({ departmentId: null });
+
+    let members = await ownerAgent.get(`/api/projects/${project.id}/members`);
+    expect(members.body.members[0]).toMatchObject({
+      userId: personId,
+      hasProjectContract: false
+    });
+
+    const missing = await ownerAgent.post(`/api/projects/${project.id}/members/${personId}/contract`);
+    expect(missing.status).toBe(400);
+    expect(missing.body.message).toMatch(/project contract PDF/i);
+
+    const attached = await ownerAgent.post(`/api/projects/${project.id}/members/${personId}/contract`)
+      .attach('contract', Buffer.from('%PDF-1.7\nFirst project contract\n%%EOF'), {
+        filename: 'first.pdf',
+        contentType: 'application/pdf'
+      });
+    expect(attached.status).toBe(200);
+    expect(attached.body.contract.id).toBeTruthy();
+
+    members = await ownerAgent.get(`/api/projects/${project.id}/members`);
+    expect(members.body.members[0]).toMatchObject({
+      userId: personId,
+      hasProjectContract: true
+    });
+
+    const replaced = await ownerAgent.post(`/api/projects/${project.id}/members/${personId}/contract`)
+      .attach('contract', Buffer.from('%PDF-1.7\nReplacement contract\n%%EOF'), {
+        filename: 'replacement.pdf',
+        contentType: 'application/pdf'
+      });
+    expect(replaced.status).toBe(200);
+    expect(replaced.body.contract.id).toBe(attached.body.contract.id);
+
+    const rows = await testDb('project_contracts').where({
+      project_id: project.id,
+      user_id: personId
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].source).toBe('uploaded');
+    const contracts = await ownerAgent.get(`/api/projects/${project.id}/contracts`);
+    expect(contracts.body.contracts.filter(contract => contract.user_id === personId)).toHaveLength(1);
   });
 });
 

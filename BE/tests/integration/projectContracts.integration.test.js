@@ -152,6 +152,46 @@ describe('Project contract generation', () => {
     expect(stillBoth.body.contracts).toHaveLength(2);
   });
 
+  test('keeps an uploaded contract when a sheet run makes the other contracts', async () => {
+    const projectId = await makeProject('Uploaded Contract Project');
+    await addSheets(projectId);
+    const stored = await contractStorage.storeGeneratedFile(validPdf, 'pdf');
+    const [uploadedId] = await testDb('project_contracts').insert({
+      project_id: projectId,
+      person_name: 'Ada',
+      document_data: JSON.stringify({ Name: 'Ada' }),
+      status: 'uploaded',
+      source: 'uploaded',
+      pdf_key: stored.storageKey
+    });
+
+    const everyone = await ownerAgent
+      .post(`/api/projects/${projectId}/contracts/generate`)
+      .send({});
+    expect(everyone.status).toBe(201);
+    expect(everyone.body).toMatchObject({
+      scope: 'sheet',
+      people: 1,
+      uploaded: ['Ada']
+    });
+
+    const after = await ownerAgent.get(`/api/projects/${projectId}/contracts`);
+    const ada = after.body.contracts.find((contract) => contract.person_name === 'Ada');
+    const bea = after.body.contracts.find((contract) => contract.person_name === 'Bea');
+    expect(ada).toMatchObject({
+      id: uploadedId,
+      source: 'uploaded',
+      status: 'uploaded'
+    });
+    expect(bea.source).toBe('generated');
+
+    const one = await ownerAgent
+      .post(`/api/projects/${projectId}/contracts/generate`)
+      .send({ person: 'Ada' });
+    expect(one.status).toBe(400);
+    expect(one.body.message).toMatch(/uploaded project contract/i);
+  });
+
   test('explains an unknown person, a person with no hours, and a missing Team sheet', async () => {
     const projectId = await makeProject();
     await addSheets(projectId);

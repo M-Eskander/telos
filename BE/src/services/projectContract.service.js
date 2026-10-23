@@ -102,6 +102,33 @@ function prettyDate(value) {
   return parsed.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
 
+// The sheet fills the layout, but an uploaded contract has no sheet row. Keep
+// the same shape so the rest of the contract panel can read it.
+function memberContractData(project, user, departmentName, startDate, endDate) {
+  return {
+    Name: user.name,
+    Department: departmentName || '',
+    Role: '',
+    Hours: '',
+    Share: '',
+    Project: project.name,
+    Studio: 'Telos Studio',
+    StartDate: prettyDate(startDate),
+    EndDate: endDate ? prettyDate(endDate) : 'Open-ended'
+  };
+}
+
+async function removeReplacedFiles(contract, keepKey) {
+  for (const key of [contract && contract.pdf_key, contract && contract.docx_key]) {
+    if (!key || key === keepKey) continue;
+    try {
+      await contractStorage.removeContractFile(key);
+    } catch (error) {
+      console.error('Could not remove an old contract file:', error.message);
+    }
+  }
+}
+
 async function getTemplate(projectId) {
   const template = await knex('project_contract_templates')
     .where({ project_id: projectId })
@@ -194,6 +221,96 @@ async function saveTemplate(projectId, { name, body }, pdfFile, docxFile) {
   return getTemplate(projectId);
 }
 
+// Attach the PDF a manager uploaded for one member. The contract belongs to
+// that person and that project, and it is marked as uploaded so a later sheet
+// run does not replace the signed file.
+async function upsertUploadedContract(projectId, userId, file, actorId = null, options = {}) {
+  const db = options.trx || knex;
+  if (!file && !options.storedFile) {
+    throw new TypeError('A project contract PDF is required');
+  }
+  const project = await db('projects').where({ id: projectId }).first();
+  if (!project) throw new TypeError('Project not found');
+  const user = await db('users').where({ id: userId }).first();
+  if (!user) throw new TypeError('Person not found');
+  const membership = await db('project_memberships')
+    .where({ project_id: projectId, user_id: userId })
+    .first();
+  if (!membership) {
+    throw new TypeError('This person is not a member of the project');
+  }
+  let departmentName = null;
+  if (membership.department_id) {
+    const department = await db('project_departments')
+      .where({ id: membership.department_id, project_id: projectId })
+      .first();
+    departmentName = department ? department.name : null;
+  }
+
+  const stored = options.storedFile || await contractStorage.storeContractFile(file);
+  let existing;
+  try {
+    existing = await db('project_contracts')
+      .where({ project_id: projectId })
+      .andWhere(function() {
+        this.where({ user_id: userId }).orWhere(function() {
+          this.whereNull('user_id').andWhere({ person_name: user.name });
+        });
+      })
+      .orderBy('id', 'desc')
+      .first();
+
+    const start = existing && existing.start_date
+      ? dateOnly(existing.start_date)
+      : (options.startDate || today());
+    const end = existing ? dateOnly(existing.end_date) : null;
+    const data = memberContractData(project, user, departmentName, start, end);
+    const payload = {
+      project_id: projectId,
+      template_id: null,
+      user_id: userId,
+      person_name: user.name,
+      document_data: JSON.stringify(data),
+      start_date: start,
+      end_date: end,
+      status: 'uploaded',
+      source: 'uploaded',
+      pdf_key: stored.storageKey,
+      docx_key: null,
+      created_by: existing && existing.created_by ? existing.created_by : (actorId || null),
+      updated_at: knex.fn.now()
+    };
+    let contractId;
+    if (existing) {
+      await db('project_contracts').where({ id: existing.id }).update(payload);
+      contractId = existing.id;
+    } else {
+      [contractId] = await db('project_contracts').insert({
+        ...payload,
+        created_at: knex.fn.now()
+      });
+    }
+    // A transaction hands the old keys back to the caller, which removes them
+    // only after the membership and the contract are both committed.
+    if (!options.trx) await removeReplacedFiles(existing, stored.storageKey);
+    return {
+      id: contractId,
+      oldPdf: existing ? existing.pdf_key : null,
+      oldWord: existing ? existing.docx_key : null,
+      stored
+    };
+  } catch (error) {
+    if (!options.storedFile) {
+      try {
+        await contractStorage.removeContractFile(stored.storageKey);
+      } catch (cleanupError) {
+        console.error('Could not remove the failed contract upload:', cleanupError.message);
+      }
+    }
+    throw error;
+  }
+}
+
 // Make one contract per person in the project sheet, or only the person the
 // manager chose. A single-person run updates that person and never touches
 // anyone else's contract.
@@ -235,8 +352,18 @@ async function generateContracts(projectId, { start_date: startDate, end_date: e
   const members = await knex('users').select('id', 'name');
 
   const made = [];
+  const uploaded = [];
   const files = [];
   for (const person of selected) {
+    const existing = await knex('project_contracts')
+      .where({ project_id: projectId, person_name: person.name })
+      .first();
+    // An uploaded PDF is the signed copy. Leave it alone unless the manager
+    // removes it first.
+    if (existing && existing.source === 'uploaded') {
+      uploaded.push(person.name);
+      continue;
+    }
     const data = {
       Name: person.name,
       Department: person.department,
@@ -249,9 +376,6 @@ async function generateContracts(projectId, { start_date: startDate, end_date: e
       EndDate: endDate ? prettyDate(endDate) : 'Open-ended'
     };
     const user = members.find((member) => member.name === person.name);
-    const existing = await knex('project_contracts')
-      .where({ project_id: projectId, person_name: person.name })
-      .first();
     const payload = {
       project_id: projectId,
       template_id: template.id,
@@ -261,6 +385,7 @@ async function generateContracts(projectId, { start_date: startDate, end_date: e
       start_date: start,
       end_date: endDate || null,
       status: existing ? existing.status : 'draft',
+      source: 'generated',
       created_by: actorId,
       updated_at: knex.fn.now()
     };
@@ -275,15 +400,22 @@ async function generateContracts(projectId, { start_date: startDate, end_date: e
     }
   }
 
+  if (requestedName && uploaded.length > 0) {
+    throw new TypeError(
+      `${uploaded[0]} has an uploaded project contract. Delete it from Contracts first if you want to make a new one from the sheet.`
+    );
+  }
+
   // The Word file of the project, if there is one, becomes the contract of
   // every person: the values go in, and the PDF comes out of it.
   let built = { words: 0, pdfs: 0 };
-  if (template.docx_key) {
+  if (template.docx_key && files.length > 0) {
     built = await buildDocuments(template, files, project.name);
   }
   return {
     contracts: made,
-    people: selected.length,
+    people: made.length,
+    uploaded,
     waiting: requestedName ? [] : waiting,
     documents: built.words,
     pdfs: built.pdfs,
@@ -357,6 +489,7 @@ async function listContracts(projectId) {
       start_date: dateOnly(row.start_date),
       end_date: dateOnly(row.end_date),
       status: row.status,
+      source: row.source || 'generated',
       data,
       document: fillTemplate(template.body, data),
       has_pdf: Boolean(row.pdf_key),
@@ -423,6 +556,7 @@ module.exports = {
   getTemplate,
   getContractPeople,
   saveTemplate,
+  upsertUploadedContract,
   generateContracts,
   listContracts,
   getContractFile,

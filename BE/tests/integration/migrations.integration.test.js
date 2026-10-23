@@ -6,6 +6,7 @@ const projectTeamMigration = require('../../src/db/migrations/20261019050000_cre
 const contractsMigration = require('../../src/db/migrations/20261019060000_add_uploaded_user_contracts');
 const passwordResetMigration = require('../../src/db/migrations/20261021000000_add_password_reset_to_users');
 const deferredVerificationMigration = require('../../src/db/migrations/20261023172000_add_email_verification_deferred_to_users');
+const projectContractSourceMigration = require('../../src/db/migrations/20261023180000_add_source_to_project_contracts');
 
 describe('Database migration lifecycle', () => {
   let migrationDb;
@@ -39,6 +40,7 @@ describe('Database migration lifecycle', () => {
     expect(await migrationDb.schema.hasColumn('users', 'password_reset_token_hash')).toBe(true);
     expect(await migrationDb.schema.hasColumn('users', 'password_reset_expires_at')).toBe(true);
     expect(await migrationDb.schema.hasColumn('users', 'email_verification_deferred_at')).toBe(true);
+    expect(await migrationDb.schema.hasColumn('project_contracts', 'source')).toBe(true);
 
     await permissionsSeed.seed(migrationDb);
     const seededPermissions = await migrationDb('permissions')
@@ -125,6 +127,11 @@ describe('Database migration lifecycle', () => {
     const genuineVerified = await migrationDb('users').where({ id: genuineVerifiedId }).first();
     expect(Number(genuineVerified.email_verified_at)).toBeGreaterThan(0);
     expect(genuineVerified.email_verification_deferred_at).toBeFalsy();
+
+    await projectContractSourceMigration.down(migrationDb);
+    expect(await migrationDb.schema.hasColumn('project_contracts', 'source')).toBe(false);
+    await projectContractSourceMigration.up(migrationDb);
+    expect(await migrationDb.schema.hasColumn('project_contracts', 'source')).toBe(true);
 
     const [, rolledBackMigrations] = await migrationDb.migrate.rollback(undefined, true);
     expect(rolledBackMigrations.length).toBeGreaterThan(0);

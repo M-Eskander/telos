@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const projectController = require('../controllers/project.controller');
 const taskRouter = require('./task.router');
+const contractUpload = require('../middleware/contractUpload.middleware');
 const { checkPerm, requireAuthenticated } = require('../middleware/auth.middleware');
 
 router.get('/', requireAuthenticated, projectController.listProjects);
@@ -11,6 +12,10 @@ router.post('/:id/departments', checkPerm('manage_team', 'project'), projectCont
 router.delete('/:id/departments/:departmentId', checkPerm('manage_team', 'project'), projectController.deleteDepartment);
 router.get('/:id/members', checkPerm('read:team', 'project'), projectController.listMembers);
 router.get('/:id/available-people', checkPerm('manage_team', 'project'), projectController.listAvailablePeople);
+// Adding someone needs their project contract PDF; the legacy PUT is kept for
+// department updates on people who are already on the team.
+router.post('/:id/members', checkPerm('manage_team', 'project'), contractUpload, projectController.addMemberWithContract);
+router.post('/:id/members/:userId/contract', checkPerm('manage_team', 'project'), contractUpload, projectController.attachMemberContract);
 router.put('/:id/members/:userId', checkPerm('manage_team', 'project'), projectController.assignMember);
 router.delete('/:id/members/:userId', checkPerm('manage_team', 'project'), projectController.removeMember);
 router.get('/:id/timeline', checkPerm('read:task', 'project'), projectController.getProjectTimeline);

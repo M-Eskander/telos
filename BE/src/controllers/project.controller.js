@@ -203,6 +203,69 @@ exports.assignMember = async (req, res, next) => {
     }
 };
 
+exports.addMemberWithContract = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const body = req.body || {};
+        const userId = validPositiveId(body.userId);
+        if (!userId) {
+            return res.status(400).json({ ok: false, message: 'Person ID must be a positive integer' });
+        }
+        const rawDepartmentId = body.departmentId;
+        const departmentId = rawDepartmentId === undefined || rawDepartmentId === null || rawDepartmentId === ''
+            ? null
+            : validPositiveId(rawDepartmentId);
+        if (rawDepartmentId !== undefined && rawDepartmentId !== null && rawDepartmentId !== '' && !departmentId) {
+            return res.status(400).json({ ok: false, message: 'Department ID must be a positive integer or null' });
+        }
+        if (!req.file) {
+            return res.status(400).json({
+                ok: false,
+                message: 'A project contract PDF is required to add someone to a project'
+            });
+        }
+        const member = await projectService.addProjectMemberWithContract(
+            req.params.id,
+            userId,
+            departmentId,
+            req.file,
+            req.user ? req.user.id : null
+        );
+        if (!member) return res.status(404).json({ ok: false, message: 'Person not found' });
+        return res.status(201).json({ ok: true, member });
+    } catch (err) {
+        if (err instanceof TypeError) {
+            return res.status(400).json({ ok: false, message: err.message });
+        }
+        return next(err);
+    }
+};
+
+exports.attachMemberContract = async (req, res, next) => {
+    try {
+        if (!await ensureProjectExists(req, res)) return;
+        const userId = validPositiveId(req.params.userId);
+        if (!userId) {
+            return res.status(400).json({ ok: false, message: 'Person ID must be a positive integer' });
+        }
+        if (!req.file) {
+            return res.status(400).json({ ok: false, message: 'A project contract PDF is required' });
+        }
+        const contract = await projectService.attachProjectMemberContract(
+            req.params.id,
+            userId,
+            req.file,
+            req.user ? req.user.id : null
+        );
+        return res.json({ ok: true, contract: { id: contract.id } });
+    } catch (err) {
+        if (err instanceof TypeError) {
+            return res.status(400).json({ ok: false, message: err.message });
+        }
+        return next(err);
+    }
+};
+
 exports.removeMember = async (req, res, next) => {
     try {
         if (!await ensureProjectExists(req, res)) return;

@@ -1,5 +1,7 @@
 const projectRepo = require('../repositories/project.repo');
 const knex = require('../config/knex');
+const contractStorage = require('./contractStorage.service');
+const projectContractService = require('./projectContract.service');
 const { projectSummary, attentionFor, computeSchedule } = require('./schedule.service');
 
 async function listProjects(userId = null) {
@@ -45,6 +47,72 @@ async function listAvailableProjectPeople(projectId) {
 
 async function assignProjectMember(projectId, userId, departmentId) {
     return projectRepo.assignProjectMember(projectId, userId, departmentId);
+}
+
+async function removeUploadedContractReplacedFiles(result) {
+    for (const key of [result.oldPdf, result.oldWord]) {
+        if (!key) continue;
+        try {
+            await contractStorage.removeContractFile(key);
+        } catch (error) {
+            console.error('Could not remove a replaced contract file:', error.message);
+        }
+    }
+}
+
+// Adding someone to a project and giving them the project contract is one
+// action. The file is written first, the membership and contract row commit
+// together, and the file is removed if either write fails.
+async function addProjectMemberWithContract(projectId, userId, departmentId, file, actorId = null) {
+    const stored = await contractStorage.storeContractFile(file);
+    let uploaded;
+    try {
+        uploaded = await knex.transaction(async trx => {
+            if (!await trx('projects').where({ id: projectId }).first()) {
+                throw new TypeError('Project not found');
+            }
+            const user = await trx('users').where({ id: userId }).first();
+            if (!user || user.is_active === false || Number(user.is_active) === 0) {
+                throw new TypeError('An active person is required for project membership');
+            }
+            if (departmentId !== null &&
+                !await trx('project_departments').where({ id: departmentId, project_id: projectId }).first()) {
+                throw new TypeError('Department must belong to this project');
+            }
+            if (await trx('project_memberships').where({ project_id: projectId, user_id: userId }).first()) {
+                throw new TypeError('This person is already a member of the project');
+            }
+            await trx('project_memberships').insert({
+                project_id: projectId,
+                user_id: userId,
+                department_id: departmentId,
+                updated_at: new Date()
+            });
+            return projectContractService.upsertUploadedContract(
+                projectId,
+                userId,
+                file,
+                actorId,
+                { trx, storedFile: stored }
+            );
+        });
+    } catch (error) {
+        try {
+            await contractStorage.removeContractFile(stored.storageKey);
+        } catch (cleanupError) {
+            console.error('Could not remove a failed contract upload:', cleanupError.message);
+        }
+        throw error;
+    }
+
+    await removeUploadedContractReplacedFiles(uploaded);
+    const members = await projectRepo.listProjectMembers(projectId);
+    return members.find(member => member.userId === Number(userId));
+}
+
+// A member who was added before their contract was ready can attach it now.
+async function attachProjectMemberContract(projectId, userId, file, actorId = null) {
+    return projectContractService.upsertUploadedContract(projectId, userId, file, actorId);
 }
 
 async function removeProjectMember(projectId, userId) {
@@ -172,6 +240,8 @@ module.exports = {
     listProjectMembers,
     listAvailableProjectPeople,
     assignProjectMember,
+    addProjectMemberWithContract,
+    attachProjectMemberContract,
     removeProjectMember,
     listProjectSummaries,
     projectAttention,

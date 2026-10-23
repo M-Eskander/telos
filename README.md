@@ -242,7 +242,7 @@ browser clients must send credentials with API calls. The main route groups are:
 | `/api/auth/*` | Owner bootstrap, login, session restore, logout |
 | `/api/projects` | Project listing and CRUD |
 | `/api/projects/:id/departments` | Project department management |
-| `/api/projects/:id/members` | Project memberships and departments |
+| `/api/projects/:id/members` | Project memberships, department moves, and required member contract PDFs |
 | `/api/projects/:id/tasks` | Project tasks and subtasks |
 | `/api/projects/:id/timeline` | Flat list of dated tasks and subtasks |
 | `/api/admin/people` | Owner-managed people and contract history |

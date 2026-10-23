@@ -93,7 +93,7 @@ async function deleteProjectDepartment(projectId, departmentId) {
 }
 
 async function listProjectMembers(projectId) {
-  return knex('project_memberships')
+  const rows = await knex('project_memberships')
     .join('users', 'project_memberships.user_id', 'users.id')
     .leftJoin('project_departments', 'project_memberships.department_id', 'project_departments.id')
     .where({ 'project_memberships.project_id': projectId })
@@ -105,9 +105,24 @@ async function listProjectMembers(projectId) {
       'users.phone_number as phoneNumber',
       'project_memberships.project_id as projectId',
       'project_memberships.department_id as departmentId',
-      'project_departments.name as departmentName'
+      'project_departments.name as departmentName',
+      knex.raw(`(
+        SELECT pc.id FROM project_contracts pc
+        WHERE pc.project_id = project_memberships.project_id
+          AND (pc.user_id = project_memberships.user_id
+            OR (pc.user_id IS NULL AND pc.person_name = users.name))
+        ORDER BY pc.id DESC LIMIT 1
+      ) AS project_contract_id`)
     )
     .orderBy('users.name');
+  return rows.map(row => {
+    const { project_contract_id: contractId, ...member } = row;
+    return {
+      ...member,
+      contractId: contractId || null,
+      hasProjectContract: Boolean(contractId)
+    };
+  });
 }
 
 async function listAvailableProjectPeople(projectId) {
