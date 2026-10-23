@@ -83,10 +83,23 @@ function issueCallbackToken({ projectId, key, fileName, userId = null, ttlSecond
   return issue({ purpose: 'callback', projectId, key, fileName, userId }, ttlSeconds);
 }
 
+// The contract layout is a separate document from the workbook. Keep its
+// tokens on their own purposes so a workbook link can never open or replace a
+// project's Word contract.
+function issueContractTemplateDocumentToken({ projectId, key, fileName, ttlSeconds = 12 * 3600 }) {
+  return issue({ purpose: 'contract-template-document', projectId, key, fileName }, ttlSeconds);
+}
+
+function issueContractTemplateCallbackToken({ projectId, key, fileName, userId = null, ttlSeconds = 7 * 24 * 3600 }) {
+  return issue({ purpose: 'contract-template-callback', projectId, key, fileName, userId }, ttlSeconds);
+}
+
 module.exports = {
   TokenError,
   sign,
   verify,
   issueDocumentToken,
-  issueCallbackToken
+  issueCallbackToken,
+  issueContractTemplateDocumentToken,
+  issueContractTemplateCallbackToken
 };

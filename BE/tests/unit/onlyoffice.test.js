@@ -44,6 +44,30 @@ describe('ONLYOFFICE signed links', () => {
     expect(() => tokenService.verify(expired)).toThrow(tokenService.TokenError);
   });
 
+  test('gives the contract layout its own document and callback purposes', () => {
+    const document = tokenService.issueContractTemplateDocumentToken({
+      projectId: 7,
+      key: 'layout-key',
+      fileName: 'Project Contract.docx'
+    });
+    const callback = tokenService.issueContractTemplateCallbackToken({
+      projectId: 7,
+      key: 'layout-key',
+      fileName: 'Project Contract.docx',
+      userId: 3
+    });
+    expect(tokenService.verify(document)).toMatchObject({
+      purpose: 'contract-template-document',
+      projectId: 7,
+      key: 'layout-key'
+    });
+    expect(tokenService.verify(callback)).toMatchObject({
+      purpose: 'contract-template-callback',
+      projectId: 7,
+      userId: 3
+    });
+  });
+
   test('reports a missing secret as not configured, not as a bad login', () => {
     delete process.env.ONLYOFFICE_JWT_SECRET;
     try {

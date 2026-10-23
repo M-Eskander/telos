@@ -296,6 +296,7 @@ module.exports = {
   getDocument,
   handleCallback,
   buildDownloadUrl,
+  callbackPayload,
   editorKey,
   safeXlsxName
 };

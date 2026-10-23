@@ -9,4 +9,9 @@ const onlyofficeController = require('../controllers/onlyoffice.controller');
 router.get('/document/:token', onlyofficeController.document);
 router.post('/callback/:token', onlyofficeController.callback);
 
+// The contract layout uses the same Document Server but its own signed
+// document and callback purposes.
+router.get('/contract-template/document/:token', onlyofficeController.contractTemplateDocument);
+router.post('/contract-template/callback/:token', onlyofficeController.contractTemplateCallback);
+
 module.exports = router;
