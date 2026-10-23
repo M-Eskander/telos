@@ -324,8 +324,10 @@ Written so we can pick it up cold tomorrow.
   timeout.
 - **Scope still manual:** the authenticated app flow/screenshots and the
   Cloudflare bare-font purge. A temporary diagnostic project was used for the
-  real browser check, then deleted; the live sheet/workbook counts are back to
-  6 / 0 / 0. No migration was added.
+  real browser check, then deleted; immediately after cleanup the live counts
+  were 6 sheets / 0 workbooks / 0 meta. A separate live workbook import then
+  ran concurrently (5 sheets / 1 workbook / 5 meta); it was left untouched.
+  No migration was added.
 
 ### The studio day to day
 
