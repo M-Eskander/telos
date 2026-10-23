@@ -193,6 +193,10 @@ Written so we can pick it up cold tomorrow.
 - **A person can join without verifying.** "Do not ask for email verification
   yet" on the add-person form marks the account as verified and sends no mail,
   so the whole team can be added while the studio is still being tested.
+- **Adding someone to a project needs their project contract PDF.** The Team
+  form requires the PDF and links it to that person and project; the Contracts
+  tab lists it as uploaded. People already on the team can attach one later, and
+  a sheet generation never replaces an uploaded contract.
 
 ### The full editor (Step 4)
 
