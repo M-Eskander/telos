@@ -1,5 +1,12 @@
 const studioService = require('../services/studio.service');
 
+function contentDisposition(disposition, fileName) {
+  const name = String(fileName || 'contract');
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(name);
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
 function fail(res, error) {
   if (error instanceof TypeError) {
     return res.status(400).json({ ok: false, message: error.message });
@@ -74,6 +81,14 @@ exports.getTemplate = async (req, res, next) => {
   }
 };
 
+exports.getContractPeople = async (req, res, next) => {
+  try {
+    return res.json({ ok: true, ...(await studioService.getContractPeople(req.params.id)) });
+  } catch (error) {
+    return fail(res, error);
+  }
+};
+
 exports.saveTemplate = async (req, res, next) => {
   try {
     const files = req.files || {};
@@ -93,8 +108,10 @@ exports.getContractFile = async (req, res, next) => {
     const kind = req.params.kind === 'word' ? 'word' : 'pdf';
     const file = await studioService.getContractFile(req.params.id, req.params.contractId, kind);
     if (!file) return res.status(404).json({ ok: false, message: 'That file has not been made yet' });
+    const inline = kind === 'pdf' && String(req.query.inline || '') === '1';
     res.setHeader('Content-Type', file.mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
+    res.setHeader('Content-Disposition', contentDisposition(inline ? 'inline' : 'attachment', file.fileName));
+    res.setHeader('Cache-Control', 'private, no-store');
     return res.send(file.buffer);
   } catch (error) {
     return next(error);

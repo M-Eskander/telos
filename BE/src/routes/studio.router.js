@@ -22,6 +22,7 @@ router.get('/:id/onlyoffice/config', checkPerm('manage_team', 'project'), onlyof
 router.get('/:id/contract-template', checkPerm('read:project', 'project'), studioController.getTemplate);
 router.put('/:id/contract-template', checkPerm('manage_team', 'project'), templateUpload, studioController.saveTemplate);
 router.get('/:id/contracts', checkPerm('read:project', 'project'), studioController.listContracts);
+router.get('/:id/contracts/people', checkPerm('read:project', 'project'), studioController.getContractPeople);
 router.get('/:id/contracts/:contractId/file/:kind', checkPerm('read:project', 'project'), studioController.getContractFile);
 router.post('/:id/contracts/generate', checkPerm('manage_team', 'project'), studioController.generateContracts);
 router.patch('/:id/contracts/:contractId', checkPerm('manage_team', 'project'), studioController.updateContract);

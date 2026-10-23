@@ -132,6 +132,17 @@ async function getTemplate(projectId) {
   };
 }
 
+// The people who can receive a contract right now, and the people who are on
+// the Team sheet but still need weekly hours. The Contracts panel asks for
+// this before it offers "everyone" or a single person.
+async function getContractPeople(projectId) {
+  const sheets = await sheetService.listSheets(projectId);
+  if (sheets.length === 0) {
+    throw new TypeError('Import a spreadsheet into this project first');
+  }
+  return sheetService.peopleFromSheets(sheets);
+}
+
 async function saveTemplate(projectId, { name, body }, pdfFile, docxFile) {
   if ((!body || !String(body).trim()) && !docxFile && !pdfFile) {
     throw new TypeError('The contract layout cannot be empty');
@@ -183,8 +194,10 @@ async function saveTemplate(projectId, { name, body }, pdfFile, docxFile) {
   return getTemplate(projectId);
 }
 
-// Make one contract per person in the project sheet.
-async function generateContracts(projectId, { start_date: startDate, end_date: endDate, actorId = null } = {}) {
+// Make one contract per person in the project sheet, or only the person the
+// manager chose. A single-person run updates that person and never touches
+// anyone else's contract.
+async function generateContracts(projectId, { start_date: startDate, end_date: endDate, person, actorId = null } = {}) {
   const sheets = await sheetService.listSheets(projectId);
   if (sheets.length === 0) {
     throw new TypeError('Import a spreadsheet into this project first');
@@ -192,7 +205,23 @@ async function generateContracts(projectId, { start_date: startDate, end_date: e
   const roster = sheetService.peopleFromSheets(sheets);
   const people = roster.people;
   const waiting = roster.waiting || [];
-  if (people.length === 0) {
+  const requestedName = person === undefined || person === null ? '' : String(person).trim();
+  const selected = requestedName
+    ? people.filter((candidate) => candidate.name.toLowerCase() === requestedName.toLowerCase())
+    : people;
+
+  if (requestedName && selected.length === 0) {
+    const waitingPerson = waiting.find(
+      (candidate) => candidate.name.toLowerCase() === requestedName.toLowerCase()
+    );
+    if (waitingPerson) {
+      throw new TypeError(
+        `${waitingPerson.name} has no weekly hours yet. Put the hours in the Team sheet first.`
+      );
+    }
+    throw new TypeError(`No one named "${requestedName}" is on the Team sheet`);
+  }
+  if (selected.length === 0) {
     throw new TypeError(
       waiting.length
         ? `No one in the sheet has weekly hours yet (${waiting.length} waiting). Put the hours in the Team sheet first.`
@@ -207,7 +236,7 @@ async function generateContracts(projectId, { start_date: startDate, end_date: e
 
   const made = [];
   const files = [];
-  for (const person of people) {
+  for (const person of selected) {
     const data = {
       Name: person.name,
       Department: person.department,
@@ -252,7 +281,15 @@ async function generateContracts(projectId, { start_date: startDate, end_date: e
   if (template.docx_key) {
     built = await buildDocuments(template, files, project.name);
   }
-  return { contracts: made, people: people.length, waiting, documents: built.words, pdfs: built.pdfs };
+  return {
+    contracts: made,
+    people: selected.length,
+    waiting: requestedName ? [] : waiting,
+    documents: built.words,
+    pdfs: built.pdfs,
+    scope: requestedName ? 'person' : 'sheet',
+    person: requestedName ? selected[0].name : null
+  };
 }
 
 // Fill the Word layout for every person and turn it into a PDF.
@@ -384,6 +421,7 @@ module.exports = {
   PLACEHOLDERS,
   fillTemplate,
   getTemplate,
+  getContractPeople,
   saveTemplate,
   generateContracts,
   listContracts,

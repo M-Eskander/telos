@@ -64,6 +64,10 @@ async function getTemplate(projectId) {
   return projectContractService.getTemplate(projectId);
 }
 
+async function getContractPeople(projectId) {
+  return projectContractService.getContractPeople(projectId);
+}
+
 async function saveTemplate(projectId, payload, pdfFile, docxFile) {
   return projectContractService.saveTemplate(projectId, payload || {}, pdfFile, docxFile);
 }
@@ -181,6 +185,7 @@ module.exports = {
   deleteSheet,
   exportSheets,
   getTemplate,
+  getContractPeople,
   saveTemplate,
   listContracts,
   getContractFile,
