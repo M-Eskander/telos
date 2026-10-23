@@ -58,6 +58,8 @@ beforeEach(async () => {
   await testDb('user_roles').del();
   await testDb('task_assignment').del();
   await testDb('tasks').del();
+  await testDb('project_meeting_attendees').del();
+  await testDb('project_meetings').del();
   await testDb('projects').del();
   await testDb('users').del();
 
@@ -407,6 +409,86 @@ describe('Project member contracts', () => {
     expect(rows[0].source).toBe('uploaded');
     const contracts = await ownerAgent.get(`/api/projects/${project.id}/contracts`);
     expect(contracts.body.contracts.filter(contract => contract.user_id === personId)).toHaveLength(1);
+  });
+});
+
+describe('Project meetings', () => {
+  test('creates, edits, and removes a meeting and its attendees', async () => {
+    const project = await createProject('Meeting Project');
+    const person = await createPerson({
+      email: 'meeting-attendee@example.com',
+      name: 'Meeting Attendee'
+    });
+    const personId = person.body.person.id;
+
+    const membership = await ownerAgent.post(`/api/projects/${project.id}/members`)
+      .field('userId', personId)
+      .attach('contract', Buffer.from('%PDF-1.7\nMeeting contract\n%%EOF'), {
+        filename: 'meeting-contract.pdf',
+        contentType: 'application/pdf'
+      });
+    expect(membership.status).toBe(201);
+
+    const created = await ownerAgent.post(`/api/projects/${project.id}/meetings`).send({
+      title: 'Weekly sync',
+      notes: 'First run',
+      start_date: '2026-06-01',
+      start_time: '10:00',
+      duration_minutes: 45,
+      recurrence: 'weekly',
+      recurrence_interval: 1,
+      weekdays: [1],
+      until_date: '2026-06-30',
+      attendee_ids: [personId]
+    });
+    expect(created.status).toBe(201);
+    const meeting = created.body.meeting;
+    expect(meeting).toMatchObject({
+      project_id: project.id,
+      title: 'Weekly sync',
+      notes: 'First run',
+      duration_minutes: 45,
+      recurrence: 'weekly',
+      recurrence_interval: 1,
+      until_date: '2026-06-30'
+    });
+    expect(meeting.attendees).toEqual([
+      expect.objectContaining({ id: personId, name: 'Meeting Attendee' })
+    ]);
+
+    const updated = await ownerAgent.patch(`/api/projects/${project.id}/meetings/${meeting.id}`).send({
+      title: 'Weekly sync updated',
+      notes: 'Second run',
+      start_time: '11:30',
+      duration_minutes: 60,
+      recurrence: 'daily',
+      recurrence_interval: 2,
+      until_date: null,
+      attendee_ids: []
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body.meeting).toMatchObject({
+      title: 'Weekly sync updated',
+      notes: 'Second run',
+      duration_minutes: 60,
+      recurrence: 'daily',
+      recurrence_interval: 2,
+      until_date: null
+    });
+    expect(updated.body.meeting.start_time).toMatch(/^11:30/);
+    expect(updated.body.meeting.attendees).toEqual([]);
+
+    const otherProject = await createProject('Other Meeting Project');
+    const wrongProject = await ownerAgent
+      .patch(`/api/projects/${otherProject.id}/meetings/${meeting.id}`)
+      .send({ title: 'Wrong project' });
+    expect(wrongProject.status).toBe(404);
+
+    const removed = await ownerAgent.delete(`/api/projects/${project.id}/meetings/${meeting.id}`);
+    expect(removed.status).toBe(200);
+    const remaining = await ownerAgent.get(`/api/projects/${project.id}/meetings`);
+    expect(remaining.status).toBe(200);
+    expect(remaining.body.meetings).toEqual([]);
   });
 });
 

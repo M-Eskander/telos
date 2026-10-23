@@ -205,7 +205,9 @@ async function updateMeeting(projectId, meetingId, payload) {
   }
   await knex('project_meetings').where({ id: meetingId }).update(payloadRow);
   if (payload.attendee_ids !== undefined) await setAttendees(projectId, meetingId, payload.attendee_ids);
-  return listProjectMeetings(projectId).then((all) => all.find((row) => row.id === meetingId) || null);
+  return listProjectMeetings(projectId).then((all) => (
+    all.find((row) => Number(row.id) === Number(meetingId)) || null
+  ));
 }
 
 async function deleteMeeting(projectId, meetingId) {
