@@ -684,7 +684,7 @@ member directory API.
 |---|---|---|
 | `GET` | `/api/admin/people` | List people, role names/assignments, contract summaries, `hasContract`, `isOwner`, and `emailVerified`. |
 | `POST` | `/api/admin/people` | Create a person and their first uploaded contract atomically. Sends a verification email. |
-| `GET` | `/api/admin/people/:userId` | Person details, role objects, person attributes, contracts, `emailVerified`, and owner flag. |
+| `GET` | `/api/admin/people/:userId` | Person details, role objects, person attributes, terms contracts, project memberships, project contracts, `emailVerified`, and owner flag. |
 | `PATCH` | `/api/admin/people/:userId` | Update profile fields and/or archive/reactivate. An email change resets verification. |
 | `POST` | `/api/admin/people/:userId/contracts` | Add a contract PDF and dates. |
 | `POST` | `/api/admin/people/:userId/send-verification` | Resend the verification email for an unverified person. |
@@ -782,6 +782,18 @@ is intentional: use the detail response when initializing role and attribute
 editors. The `POST` person response returns `{ ok, person }` with the created
 profile, assigned roles, initial contract, and `hasContract`; it does not return
 the person-detail `attributes` collection.
+
+The detail response also contains the person's project work:
+
+- `projectMemberships`: `[{ projectId, projectName, departmentId, departmentName }]`
+  for every project they belong to.
+- `projectContracts`: `[{ id, projectId, projectName, personName, source,
+  status, startDate, endDate, hasPdf, hasWord }]` for project contracts in
+  those projects. `source` is `"uploaded"` for the signed PDF attached when
+  they joined, or `"generated"` for a contract made from the sheet. The two
+  kinds are kept separate in the UI: uploaded contracts are signed, generated
+  contracts are not. A generated contract may still match a person by name
+  when the older row has no `user_id`.
 
 ### Additional contract upload and download
 

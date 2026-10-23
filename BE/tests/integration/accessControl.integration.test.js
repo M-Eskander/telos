@@ -52,6 +52,9 @@ beforeEach(async () => {
   await testDb('user_roles').del();
   await testDb('task_assignment').del();
   await testDb('tasks').del();
+  await testDb('project_contracts').del();
+  await testDb('project_memberships').del();
+  await testDb('project_departments').del();
   await testDb('projects').del();
   await testDb('users').del();
 
@@ -147,6 +150,71 @@ describe('Access-control administration API', () => {
     const missingAttributes = await ownerAgent.put('/api/admin/people/99999/attributes')
       .send({ attributes: [] });
     expect(missingAttributes.status).toBe(404);
+  });
+
+  test('shows the projects and project contracts on a person', async () => {
+    const signedProject = await ownerAgent.post('/api/projects').send({ name: 'Signed Project' });
+    const generatedProject = await ownerAgent.post('/api/projects').send({ name: 'Generated Project' });
+    const department = await ownerAgent.post(`/api/projects/${signedProject.body.project.id}/departments`)
+      .send({ name: 'Art' });
+    const created = await createPerson(ownerAgent, {
+      name: 'Project Contract Person',
+      email: 'project-contract-person@example.com'
+    });
+    const personId = created.body.person.id;
+
+    const membership = await ownerAgent.post(`/api/projects/${signedProject.body.project.id}/members`)
+      .field('userId', personId)
+      .field('departmentId', department.body.department.id)
+      .attach('contract', Buffer.from('%PDF-1.7\nSigned project contract\n%%EOF'), {
+        filename: 'signed.pdf',
+        contentType: 'application/pdf'
+      });
+    expect(membership.status).toBe(201);
+
+    await ownerAgent.put(`/api/projects/${generatedProject.body.project.id}/members/${personId}`)
+      .send({ departmentId: null });
+    const [generatedId] = await testDb('project_contracts').insert({
+      project_id: generatedProject.body.project.id,
+      person_name: 'Project Contract Person',
+      document_data: JSON.stringify({ Name: 'Project Contract Person' }),
+      status: 'draft',
+      source: 'generated'
+    });
+
+    const details = await ownerAgent.get(`/api/admin/people/${personId}`);
+    expect(details.status).toBe(200);
+    expect(details.body.person.projectMemberships).toEqual([
+      expect.objectContaining({
+        projectId: generatedProject.body.project.id,
+        projectName: 'Generated Project',
+        departmentId: null,
+        departmentName: null
+      }),
+      expect.objectContaining({
+        projectId: signedProject.body.project.id,
+        projectName: 'Signed Project',
+        departmentId: department.body.department.id,
+        departmentName: 'Art'
+      })
+    ]);
+    expect(details.body.person.projectContracts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        projectId: signedProject.body.project.id,
+        projectName: 'Signed Project',
+        source: 'uploaded',
+        hasPdf: true,
+        hasWord: false
+      }),
+      expect.objectContaining({
+        id: generatedId,
+        projectId: generatedProject.body.project.id,
+        projectName: 'Generated Project',
+        source: 'generated',
+        hasPdf: false,
+        hasWord: false
+      })
+    ]));
   });
 
   test('validates people and role assignments without persisting invalid input', async () => {

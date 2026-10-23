@@ -19,6 +19,12 @@ function verificationFields(user) {
   };
 }
 
+const dateOnly = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+};
+
 async function listPeople() {
   const people = await knex('users')
     .select('id', 'name', 'email', 'phone_number', 'location', 'age', 'is_active', 'created_at', 'email_verified_at', 'email_verification_deferred_at')
@@ -172,12 +178,64 @@ async function getPersonAccessDetails(userId) {
   ]);
   const ownerAccount = await knex('owner_account').where({ id: 1, user_id: userId }).first();
   const contracts = await contractService.listContractsForUser(userId);
+  const projectMemberships = await knex('project_memberships')
+    .join('projects', 'project_memberships.project_id', 'projects.id')
+    .leftJoin('project_departments', 'project_memberships.department_id', 'project_departments.id')
+    .where({ 'project_memberships.user_id': userId })
+    .select(
+      'projects.id as projectId',
+      'projects.name as projectName',
+      'project_memberships.department_id as departmentId',
+      'project_departments.name as departmentName'
+    )
+    .orderBy('projects.name');
+  const projectIds = projectMemberships.map(membership => membership.projectId);
+  let projectContracts = [];
+  if (projectIds.length) {
+    projectContracts = await knex('project_contracts')
+      .join('projects', 'project_contracts.project_id', 'projects.id')
+      .whereIn('project_contracts.project_id', projectIds)
+      .andWhere(function() {
+        this.where('project_contracts.user_id', userId)
+          .orWhere(function() {
+            this.whereNull('project_contracts.user_id')
+              .andWhere('project_contracts.person_name', person.name);
+          });
+      })
+      .select(
+        'project_contracts.id',
+        'project_contracts.project_id as projectId',
+        'projects.name as projectName',
+        'project_contracts.person_name as personName',
+        'project_contracts.source',
+        'project_contracts.status',
+        'project_contracts.start_date as startDate',
+        'project_contracts.end_date as endDate',
+        'project_contracts.pdf_key as pdfKey',
+        'project_contracts.docx_key as docxKey'
+      )
+      .orderBy('projects.name')
+      .orderBy('project_contracts.id', 'desc');
+  }
   return {
     ...personFields,
     ...verificationFields(person),
     roles,
     attributes,
     contracts,
+    projectMemberships,
+    projectContracts: projectContracts.map(contract => ({
+      id: contract.id,
+      projectId: contract.projectId,
+      projectName: contract.projectName,
+      personName: contract.personName,
+      source: contract.source || 'generated',
+      status: contract.status,
+      startDate: dateOnly(contract.startDate),
+      endDate: dateOnly(contract.endDate),
+      hasPdf: Boolean(contract.pdfKey),
+      hasWord: Boolean(contract.docxKey)
+    })),
     isOwner: !!ownerAccount
   };
 }
