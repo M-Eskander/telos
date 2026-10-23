@@ -282,6 +282,51 @@ Written so we can pick it up cold tomorrow.
   editor page is outside the Shell for full viewport; the IP-literal save fetch
   goes through the public origin rather than the private address.
 
+### Full editor follow-up (2026-10-23)
+
+- **The editor never started because Caddy served the Telos SPA for the
+  Document Server's versioned iframe path.** ONLYOFFICE loads
+  `/9.4.0-<build>/web-apps/...` and `/9.4.0-<build>/doc/...`; the Caddy matcher
+  only covered bare `/web-apps/*` and `/doc/*`, so the versioned URL fell
+  through to `try_files /index.html`. The iframe was the Telos app (hence
+  `/api/auth/me` 401s inside it), the Document Server never created a session,
+  and `onAppReady`/`onDocumentReady` never fired. Caddy now proxies any
+  `/<x.y.z>-<build>/...` prefix to `onlyoffice:80`; its nginx strips the prefix.
+- **The config also used the wrong API document type.** ONLYOFFICE expects
+  `documentType: 'cell'` for spreadsheets, not `'spreadsheet'`; the browser
+  logged that warning. Both changes are required.
+- **The JWT and transport were not the cause.** Backend and Document Server
+  secret hashes match; `JWT_ENABLED=true`, `JWT_IN_BODY=true`, browser tokens
+  enabled; the public `/doc` WebSocket upgrades with 101 through Cloudflare and
+  Caddy. Caddy now also sets `flush_interval -1` and `stream_timeout 0s` on the
+  ONLYOFFICE upstream. A real headless Chromium session against the public URL
+  reached `onAppReady` at 2.5 s, opened the versioned `wss://.../doc/...`
+  socket with 101, and reached `onDocumentReady` at 18.2 s.
+- **Fonts were not missing from the build.** The three files were present in
+  both `public/fonts` and `dist/fonts`; Caddy's `/fonts/*` ONLYOFFICE matcher
+  was intercepting the app's font requests, and the Document Server 404ed
+  looking under its own `fonts/` directory. The app fonts now have exact Caddy
+  routes before the ONLYOFFICE matcher. The build runs
+  `scripts/copy-fonts.mjs` after Vite to copy and verify all three files on
+  every build, and the CSS uses `?v=2` to bypass the earlier Cloudflare 404
+  objects. Those bare URLs were cached by Cloudflare with
+  `max-age=31536000, immutable`; a one-time Cloudflare purge of
+  `/fonts/comfortaa-latin.woff2`,
+  `/fonts/amaticsc-400.woff2` and `/fonts/amaticsc-700.woff2` is still needed
+  for the bare URLs. The app no longer requests them.
+- **The timeout crash was React owning the editor node.** The editor container
+  was conditionally rendered by React; ONLYOFFICE moved/replaced its children,
+  and React's later `removeChild` threw `NotFoundError` and the error boundary
+  showed "Telos UI crashed". The page now has a stable ref'd host with an
+  imperatively created child, so React never sees the iframe; teardown is in
+  try/catch. The editor/config timeout is 30 s and the fallback is a visible
+  overlay with "Back to the quick grid"; the config fetch also has a 30 s
+  timeout.
+- **Scope still manual:** the authenticated app flow/screenshots and the
+  Cloudflare bare-font purge. A temporary diagnostic project was used for the
+  real browser check, then deleted; the live sheet/workbook counts are back to
+  6 / 0 / 0. No migration was added.
+
 ### The studio day to day
 
 - **A home page** (`/`) — everything assigned to you across every project, the
