@@ -92,6 +92,7 @@ export default function Tasks({
   };
 
   const saveField = async (task, patch, note) => {
+    setRowError(null);
     try {
       await patchTask(task, patch, note);
     } catch (error) {
@@ -195,6 +196,7 @@ export default function Tasks({
     const current = dragRef.current;
     if (!current || !canDrag) return;
     event.preventDefault();
+    setRowError(null);
     const source = findNode(tree, current.id);
     const target = findNode(tree, node.id);
     if (!source || !target) return;
@@ -231,7 +233,7 @@ export default function Tasks({
       <div className="toolbar">
         <div className="chips" role="group" aria-label="Filter tasks by status">
           {[['all', 'All'], ...Object.entries(STATUS)].map(([k, l]) => (
-            <button key={k} className={status === k ? 'on' : ''} onClick={() => setStatus(k)}>{l}</button>
+            <button key={k} className={status === k ? 'on' : ''} aria-pressed={status === k} onClick={() => setStatus(k)}>{l}</button>
           ))}
         </div>
         <div className="row">
@@ -250,7 +252,7 @@ export default function Tasks({
         </div>
       </div>
 
-      {rowError && <ErrorNote error={{ message: rowError }} retry={() => setRowError(null)} />}
+      {rowError && <ErrorNote error={{ message: rowError }} dismiss={() => setRowError(null)} />}
 
       <Panel state={state}>
         {visible.length === 0 ? (
@@ -643,12 +645,6 @@ function BulkForm({ projectId, ids, members, onClose, onSaved }) {
   );
 }
 
-// The title of a task, so a prerequisite can be picked by name.
-function titleOf(list, id) {
-  const found = list.find((item) => Number(item.id) === Number(id));
-  return found ? found.title : '';
-}
-
 function flattenTree(nodes) {
   const all = [];
   const walk = (list) => {
@@ -674,11 +670,20 @@ function TaskForm({ projectId, members, siblings = [], task, parent, onClose, on
     start_date: toDateInput(task?.start_date), end_date: toDateInput(task?.end_date),
     assignee_ids: (task?.assignees || []).map((a) => a.id),
     is_milestone: !!task?.is_milestone,
-    depends_on_title: (task?.depends_on || [])[0] ? titleOf(siblings, task.depends_on[0]) : ''
+    depends_on_ids: (task?.depends_on || []).map(Number)
   });
   const { busy, error, submit, setError } = useSubmit();
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const toggle = (id) => setF({ ...f, assignee_ids: f.assignee_ids.includes(id) ? f.assignee_ids.filter((x) => x !== id) : [...f.assignee_ids, id] });
+  const toggleDependency = (id) => {
+    const dependencyId = Number(id);
+    setF({
+      ...f,
+      depends_on_ids: f.depends_on_ids.includes(dependencyId)
+        ? f.depends_on_ids.filter((value) => value !== dependencyId)
+        : [...f.depends_on_ids, dependencyId]
+    });
+  };
 
   const weight = Number(f.weight);
   const band = weightBand(rules, weight);
@@ -722,10 +727,9 @@ function TaskForm({ projectId, members, siblings = [], task, parent, onClose, on
     submit(async () => {
       const saved = await api(`/projects/${projectId}/tasks${editing ? `/${task.id}` : ''}`, { method: editing ? 'PATCH' : 'POST', body });
       if (editing && canManageTasks) {
-        const match = siblings.find((item) => item.title === f.depends_on_title.trim());
-        const wanted = match ? [match.id] : [];
-        const current = (task.depends_on || []).map(Number);
-        if (wanted.length !== current.length || wanted[0] !== current[0]) {
+        const wanted = [...new Set(f.depends_on_ids)].sort((a, b) => a - b);
+        const current = [...new Set((task.depends_on || []).map(Number))].sort((a, b) => a - b);
+        if (wanted.join(',') !== current.join(',')) {
           await api(`/projects/${projectId}/tasks/${task.id}/dependencies`, {
             method: 'PUT',
             body: { depends_on: wanted }
@@ -811,19 +815,30 @@ function TaskForm({ projectId, members, siblings = [], task, parent, onClose, on
                   This task is a milestone
                 </label>
               </Field>
-              <Field label="Depends on" hint="What has to be finished first.">
-                <input
-                  list="depends-on-options"
-                  value={f.depends_on_title}
-                  placeholder="Nothing"
-                  onChange={(e) => setF({ ...f, depends_on_title: e.target.value })}
-                />
-                <datalist id="depends-on-options">
-                  {siblings
-                    .filter((item) => !editing || item.id !== task.id)
-                    .map((item) => <option key={item.id} value={item.title} />)}
-                </datalist>
-              </Field>
+              {editing && canManageTasks && (
+                <fieldset>
+                  <legend>Depends on</legend>
+                  <p className="muted">Choose every task that must finish first.</p>
+                  {siblings.filter((item) => Number(item.id) !== Number(task.id)).length === 0 ? (
+                    <p className="muted">There are no other tasks to choose.</p>
+                  ) : (
+                    <div className="checks dependency-options">
+                      {siblings
+                        .filter((item) => Number(item.id) !== Number(task.id))
+                        .map((item) => (
+                          <label key={item.id}>
+                            <input
+                              type="checkbox"
+                              checked={f.depends_on_ids.includes(Number(item.id))}
+                              onChange={() => toggleDependency(item.id)}
+                            />
+                            <span>{item.title} <small className="muted">#{item.id}</small></span>
+                          </label>
+                        ))}
+                    </div>
+                  )}
+                </fieldset>
+              )}
             </div>
             <fieldset>
               <legend>Assignees</legend>

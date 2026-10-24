@@ -9,11 +9,12 @@ Start the backend on its default port (`5000`), then run:
 
 ```sh
 npm ci
-API_TARGET=http://localhost:5000 npm run dev
+npm run dev
 ```
 
 Vite serves the app at `http://localhost:5173` and proxies `/api` to the
-backend. The browser session cookie is HTTP-only and same-site, so production
+backend on port `5000`. Set `API_TARGET=http://host:port` when the API runs
+elsewhere. The browser session cookie is HTTP-only and same-site, so production
 should serve the frontend and API from the same site. Set `VITE_API_ORIGIN`
 only when cross-origin cookies and CORS are configured.
 

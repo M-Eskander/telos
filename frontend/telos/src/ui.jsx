@@ -72,16 +72,22 @@ export function useAsync(fn, deps = []) {
 // was loaded before, so a page can load just the section that is on screen.
 export function useAsyncIf(fn, deps = [], enabled = true) {
   const [s, setS] = useState({ data: null, error: null, loading: enabled });
+  const requestId = useRef(0);
   const run = useCallback(() => {
     if (!enabled) return undefined;
-    let live = true;
+    const currentRequest = ++requestId.current;
     setS((p) => ({ ...p, loading: true, error: null }));
-    fn().then((data) => live && setS({ data, error: null, loading: false }))
-        .catch((error) => live && setS({ data: null, error, loading: false }));
-    return () => { live = false; };
+    fn().then((data) => {
+      if (requestId.current === currentRequest) setS({ data, error: null, loading: false });
+    }).catch((error) => {
+      if (requestId.current === currentRequest) setS({ data: null, error, loading: false });
+    });
+    return () => {
+      if (requestId.current === currentRequest) requestId.current += 1;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, ...deps]);
-  useEffect(() => { run(); }, [run]);
+  useEffect(() => run(), [run]);
   return { ...s, reload: run };
 }
 
@@ -94,12 +100,13 @@ export const errText = (e) => {
   return e?.status === 403 ? "You don't have access to this." : e?.message || 'Something went wrong.';
 };
 
-export function ErrorNote({ error, retry }) {
+export function ErrorNote({ error, retry, dismiss }) {
   if (!error) return null;
   return (
     <div className="note error" role="alert">
       <span>{errText(error)}</span>
-      {retry && error.status !== 403 && <button className="link" onClick={retry}>Try again</button>}
+      {retry && error.status !== 403 && <button type="button" className="link" onClick={retry}>Try again</button>}
+      {dismiss && <button type="button" className="link" onClick={dismiss}>Dismiss</button>}
     </div>
   );
 }

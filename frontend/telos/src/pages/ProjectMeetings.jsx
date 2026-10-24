@@ -72,7 +72,7 @@ export default function ProjectMeetings({ projectId, members, canManage = false 
 
 function MeetingItem({ meeting, projectId, canManage, onEdit, onChanged }) {
   const remove = useSubmit();
-  const next = meeting.dates[0];
+  const next = meeting.dates.find((date) => date >= localDateKey()) || meeting.until_date || meeting.start_date;
   return (
     <div className="row-item">
       <div>
@@ -191,6 +191,7 @@ function MeetingForm({ projectId, people, meeting = null, onClose, onSaved }) {
                   type="button"
                   key={day}
                   className={`weekday ${f.weekdays.includes(day) ? 'on' : ''}`}
+                  aria-pressed={f.weekdays.includes(day)}
                   onClick={() => toggleWeekday(day)}
                 >
                   {label}

@@ -5,5 +5,5 @@ import react from '@vitejs/plugin-react';
 // Production: serve the built files and proxy /api from the same site.
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: { '/api': process.env.API_TARGET || 'http://localhost:3000' } },
+  server: { proxy: { '/api': process.env.API_TARGET || 'http://localhost:5000' } },
 });

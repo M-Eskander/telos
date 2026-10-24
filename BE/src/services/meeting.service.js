@@ -125,8 +125,9 @@ async function listProjectMeetings(projectId) {
     .select('m.*', 'p.name as project_name')
     .orderBy('m.start_date', 'asc');
   await attachAttendees(rows);
+  const today = new Date().toISOString().slice(0, 10);
   const horizon = fromDay(dayNumber(new Date()) + 400);
-  return rows.map((row) => publicMeeting(row, occurrences(row, row.start_date, horizon)));
+  return rows.map((row) => publicMeeting(row, occurrences(row, today, horizon)));
 }
 
 async function createMeeting(projectId, payload, actorId) {

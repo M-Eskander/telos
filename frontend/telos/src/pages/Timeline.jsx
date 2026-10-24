@@ -322,6 +322,7 @@ function Chart({ tasks, projectId, onChange, canEdit, isCollapsed, onToggle }) {
             <button
               key={option.key}
               className={scale === option.key ? 'on' : ''}
+              aria-pressed={scale === option.key}
               onClick={() => setScale(narrow && option.key === 'fit' ? 'quarter' : option.key)}
               disabled={narrow && option.key === 'fit'}
             >

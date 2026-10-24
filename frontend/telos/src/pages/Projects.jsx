@@ -49,8 +49,8 @@ export default function Projects() {
         </div>
         {all.length > 0 && (
           <div className="chips" role="group" aria-label="Project view">
-            <button className={view === 'cards' ? 'on' : ''} onClick={() => setView('cards')}>Cards</button>
-            <button className={view === 'table' ? 'on' : ''} onClick={() => setView('table')}>Portfolio</button>
+            <button className={view === 'cards' ? 'on' : ''} aria-pressed={view === 'cards'} onClick={() => setView('cards')}>Cards</button>
+            <button className={view === 'table' ? 'on' : ''} aria-pressed={view === 'table'} onClick={() => setView('table')}>Portfolio</button>
           </div>
         )}
       </div>

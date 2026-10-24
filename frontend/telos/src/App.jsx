@@ -3,7 +3,7 @@ import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation } from 'rea
 import { useAuth } from './auth.jsx';
 import { Logo } from './brand.jsx';
 import { Icon } from './icons.jsx';
-import { ConfirmHost, Loading, Toaster, useAsync } from './ui.jsx';
+import { ConfirmHost, Empty, Loading, PageTitle, Toaster, useAsync } from './ui.jsx';
 import { api } from './api.js';
 import { CommandPalette, ShortcutSheet, useShortcuts } from './Command.jsx';
 import { moodFor, moodImage } from './mascot.js';
@@ -48,7 +48,7 @@ function OfflineBanner() {
   if (!offline) return null;
   return (
     <div className="offline-bar" role="status" aria-live="polite">
-      You're offline. Changes won't save until your connection returns.
+      You're offline. Edits aren't queued; reconnect and retry anything that failed.
     </div>
   );
 }
@@ -59,7 +59,7 @@ function Shell() {
   const attention = useAsync(() => api('/attention'), []);
   const needs = attention.data?.attention || null;
   if (!ready) return <Loading label="Restoring your session…" />;
-  if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search + loc.hash }} />;
 
   const initials = String(user.name || '')
     .split(/\s+/)
@@ -148,6 +148,21 @@ function Shell() {
 function OwnerOnly({ children }) {
   const { user } = useAuth();
   return user?.isOwner ? children : <div className="note error">Only the owner can open this page.</div>;
+}
+
+function NotFound() {
+  return (
+    <>
+      <PageTitle>Page not found</PageTitle>
+      <Empty
+        title="Page not found"
+        mood="sad"
+        action={<Link className="button-like" to="/">Back to your desk</Link>}
+      >
+        This page does not exist or may have moved.
+      </Empty>
+    </>
+  );
 }
 
 // What the studio assistant says, and where it sends you. It names the first
@@ -239,7 +254,7 @@ export default function App() {
         <Route path="people" element={<OwnerOnly><People /></OwnerOnly>} />
         <Route path="people/:id" element={<OwnerOnly><PersonPage /></OwnerOnly>} />
         <Route path="access" element={<OwnerOnly><Access /></OwnerOnly>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
     </>
