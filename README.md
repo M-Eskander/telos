@@ -1,15 +1,14 @@
 # Telos
 
-**Version 1.00** · Project and task management backend
+**Backend API v1.00** · Project and task management for Telos Studio
 
-Telos is a Node.js/Express API for managing projects, project teams,
-departments, tasks, timelines, user contracts, and fine-grained access control.
-It combines role- and attribute-based authorization with project-scoped team
-and task workflows.
+Telos includes a React frontend and a Node.js/Express API for managing
+projects, project teams, departments, tasks, timelines, contracts, meetings,
+and fine-grained access control. The API combines role- and attribute-based
+authorization with project-scoped team and task workflows.
 
-This repository currently contains the **backend only**. It does not contain a
-frontend application. The frontend integration contract is documented in
-[frontEndSpec.md](./frontEndSpec.md).
+The frontend lives in [`frontend/telos`](./frontend/telos/README.md). Its API
+integration contract is documented in [frontEndSpec.md](./frontEndSpec.md).
 
 ## At a glance
 
@@ -38,6 +37,8 @@ API in this repository.
 - Redis for production sessions and permission caching
 - Passport Local Strategy and bcryptjs
 - Jest and Supertest
+- React 18 and React Router
+- Vite 5 for the frontend development server and production build
 
 ## Repository layout
 
@@ -58,9 +59,15 @@ API in this repository.
 │   ├── docs/
 │   ├── knexfile.js
 │   └── package.json
+├── frontend/
+│   └── telos/              # React app, static assets, and Vite build config
+├── deploy/                 # Caddy configuration
 ├── docker-compose.yml     # MySQL and Redis services only
 └── frontEndSpec.md        # Frontend-facing API contract
 ```
+
+The frontend build output is generated under the ignored `dist/` directory at
+the repository root for deployment; do not commit build output.
 
 ## Getting started
 
@@ -304,15 +311,19 @@ still need the seeds from step 1.
 
 ### 3. Frontend
 
-The frontend is built separately and published as static files:
+Build the checked-in React app and copy its output to the root `dist/` folder
+that the Caddy deployment serves:
 
 ```sh
-npm run build      # writes dist/
+cd frontend/telos
+npm ci
+npm run build
+mkdir -p ../../dist
+cp -a dist/. ../../dist/
 ```
 
-Copy the contents of `dist/` into the directory the web server serves and
-confirm the new hashed assets are reachable. Old asset files can stay on disk
-for a while; the index file decides which ones are used.
+Confirm the new hashed assets are reachable. Old asset files can stay on disk
+for a while; `index.html` decides which ones are used.
 
 ## Testing
 
@@ -336,9 +347,8 @@ contract storage are ignored by Git.
   are limited separately to 30 per 15 minutes per address. The bucket storage
   is process-local; multi-instance deployments should enforce a shared limit
   upstream or use a shared limiter.
-- The current repository does not include a frontend, OpenAPI document,
-  password-reset flow, public people directory, pagination/search contract, or
-  revenue-sharing feature.
+- The repository does not include an OpenAPI document, public people directory,
+  pagination/search contract, or revenue-sharing feature.
 - Compose currently defines infrastructure services only; it is not a complete
   one-command Telos application deployment.
 
